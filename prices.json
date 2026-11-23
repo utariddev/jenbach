@@ -1,13 +1,59 @@
 {
-  "updated_at": "2026-11-17",
+  "updated_at": "2026-11-23",
   "models": {
-    "flash":    { "in": 0.75, "cached": 0.1875, "out": 3.75,  "note": "Promo until 2026-12-31" },
-    "hydrogen": { "in": 1.50, "cached": 0.375,  "out": 7.50,  "note": "Standard rate" },
-    "argon":    { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Promo until 2026-11-30" },
-    "carbon":   { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Promo until 2026-11-30" },
-    "sonnet":   { "in": 3.00, "cached": 0.30,   "out": 15.00, "note": "Claude Sonnet 5.5" },
-    "opus":     { "in": 5.00, "cached": 0.50,   "out": 25.00, "note": "Claude Opus 5.5" },
-    "gpt-oss":  { "in": 0.50, "cached": 0.125,  "out": 2.00,  "note": "GPT-OSS 120B" },
-    "default":  { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Fallback rate" }
+    "flash": {
+      "in": 0.75,
+      "cached": 0.075,
+      "out": 3.75,
+      "note": "Gemini 3.8 Flash"
+    },
+    "hydrogen": {
+      "in": 1.5,
+      "cached": 0.075,
+      "out": 7.5,
+      "note": "Gemini 4 Hydrogen"
+    },
+    "argon": {
+      "in": 2,
+      "cached": 0.1,
+      "out": 10,
+      "note": "Gemini 4 Argon"
+    },
+    "carbon": {
+      "in": 2,
+      "cached": 0.1,
+      "out": 10,
+      "note": "Gemini 4 Carbon"
+    },
+    "neon": {
+      "in": 3,
+      "cached": 0.15,
+      "out": 15,
+      "note": "Gemini 4 Neon"
+    },
+    "sonnet": {
+      "in": 2,
+      "cached": 0.1,
+      "out": 10,
+      "note": "Claude Sonnet 5.5"
+    },
+    "opus": {
+      "in": 4,
+      "cached": 0.2,
+      "out": 20,
+      "note": "Claude Opus 5.5"
+    },
+    "gpt-oss": {
+      "in": 0.15,
+      "cached": 0.015,
+      "out": 0.6,
+      "note": "GPT-OSS 120B"
+    },
+    "default": {
+      "in": 2,
+      "cached": 0.1,
+      "out": 10,
+      "note": "Fallback rate"
+    }
   }
 }
