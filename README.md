@@ -2,6 +2,17 @@
 
 Lightweight statusline HUD and usage/cost reporting tool for **Google Antigravity CLI (`agy`)**.
 
+**Live Statusline HUD**
+<p align="left">
+  <img src="https://github.com/user-attachments/assets/16785252-2712-44a9-bc7a-3d7e7581663d" alt="Jenbach live statusline HUD" width="820">
+</p>
+
+**Usage & Subagent Report (`jenbach` / `!jenbach`)**
+
+<p align="left">
+  <img src="https://github.com/user-attachments/assets/71783481-48e7-44e1-9525-683d55c3ebae" alt="Jenbach usage and subagent report" width="820">
+</p
+
 ## Features
 
 - **Live Statusline:** Track your active model, token usage, cache hit rate, context fill, estimated cost (including live per-subagent spend and animated activity spinner), and remaining weekly quota directly inside `agy`—automatically adapting to your terminal width.
@@ -32,6 +43,10 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 - Interactive settings (terminal): `jenbach config`
 - Project info & version: `jenbach info` (or `jenbach --version`)
 - Help: `jenbach --help` (or `!jenbach help`)
+
+<p align="left">
+  <img src="https://github.com/user-attachments/assets/ad57ae94-0688-4e99-b82c-725a566c2b26" alt="Jenbach settings menu" width="560">
+</p>
 
 ### Report Views & Date Filters
 
