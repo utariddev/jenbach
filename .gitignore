@@ -1,0 +1,18 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary, backup & atomic swap files
+*.bak
+*.tmp.*
+.prices.hdr.*
+.prices.body.*
+.prices_update.lock/
+.sub_*.lock/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*~
+*.swp
