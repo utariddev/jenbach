@@ -237,24 +237,37 @@ cp "$REPO_DIR/prices.json" "$SYNC_TMP/prices.json"
 
 cat << 'JSON' > "$SYNC_TMP/upstream.json"
 {
-  "gemini/gemini-2.5-flash": {
+  "gemini/gemini-3.8-flash": {
     "input_cost_per_token": 0.0000003,
     "output_cost_per_token": 0.0000025,
     "cache_read_input_token_cost": 0.000000075
   },
-  "gemini/gemini-2.5-pro": {
+  "gemini/gemini-4-hydrogen": {
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.0000075
+  },
+  "gemini/gemini-4-argon": {
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001
+  },
+  "gemini/gemini-4-carbon": {
     "input_cost_per_token": 0.00000125,
     "output_cost_per_token": 0.00001
   },
-  "anthropic/claude-sonnet-4-5": {
+  "gemini/gemini-4-neon": {
     "input_cost_per_token": 0.000003,
     "output_cost_per_token": 0.000015,
-    "cache_read_input_token_cost": 0.0000003
+    "cache_read_input_token_cost": 0.00000015
   },
-  "anthropic/claude-opus-4-5": {
-    "input_cost_per_token": 0.000005,
-    "output_cost_per_token": 0.000025,
-    "cache_read_input_token_cost": 0.0000005
+  "claude-sonnet-5-5": {
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.00001,
+    "cache_read_input_token_cost": 0.0000001
+  },
+  "claude-opus-5-5": {
+    "input_cost_per_token": 0.000004,
+    "output_cost_per_token": 0.00002,
+    "cache_read_input_token_cost": 0.0000002
   }
 }
 JSON
@@ -264,8 +277,11 @@ assert_contains "sync_prices outputs diff table" "| Model | Change |" "$SYNC_DIF
 assert_eq "sync_prices flash in" "0.3" "$(jq -r '.models.flash.in' "$SYNC_TMP/prices.json")"
 assert_eq "sync_prices flash cached" "0.075" "$(jq -r '.models.flash.cached' "$SYNC_TMP/prices.json")"
 assert_eq "sync_prices flash out" "2.5" "$(jq -r '.models.flash.out' "$SYNC_TMP/prices.json")"
-assert_eq "sync_prices argon in" "1.25" "$(jq -r '.models.argon.in' "$SYNC_TMP/prices.json")"
-assert_eq "sync_prices sonnet note preserved on unchanged rates" "Claude Sonnet 5.5" "$(jq -r '.models.sonnet.note' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices hydrogen cached preserved on unchanged in" "0.375" "$(jq -r '.models.hydrogen.cached' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices argon note preserved on unchanged rates" "Promo until 2026-11-30" "$(jq -r '.models.argon.note' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices carbon in" "1.25" "$(jq -r '.models.carbon.in' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices carbon cached recomputed on changed in" "0.3125" "$(jq -r '.models.carbon.cached' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices neon added" "3" "$(jq -r '.models.neon.in' "$SYNC_TMP/prices.json")"
 assert_eq "sync_prices gpt-oss fallback preserved" "0.50" "$(jq -r '.models["gpt-oss"].in' "$SYNC_TMP/prices.json")"
 
 # Idempotent second run should not bump updated_at or emit diff
@@ -277,7 +293,7 @@ assert_eq "sync_prices idempotent keeps updated_at" "2020-01-01" "$(jq -r '.upda
 # Out-of-range rate rejection (in: 9999)
 cat << 'JSON' > "$SYNC_TMP/upstream_bad.json"
 {
-  "gemini/gemini-2.5-flash": {
+  "gemini/gemini-3.8-flash": {
     "input_cost_per_token": 0.009999,
     "output_cost_per_token": 0.0000025
   }
@@ -309,13 +325,13 @@ fi
 rm -f "$SYNC_TMP/fresh_prices.json" "$SYNC_TMP/summary.md"
 SYNC_SUMMARY_FILE="$SYNC_TMP/summary.md" bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream.json" "$SYNC_TMP/fresh_prices.json" >/dev/null 2>&1
 assert_eq "sync_prices fresh generation creates file" "true" "$([ -s "$SYNC_TMP/fresh_prices.json" ] && echo true || echo false)"
-assert_eq "sync_prices fresh argon cached fallback 0.25x" "0.3125" "$(jq -r '.models.argon.cached' "$SYNC_TMP/fresh_prices.json")"
+assert_eq "sync_prices fresh carbon cached fallback 0.25x" "0.3125" "$(jq -r '.models.carbon.cached' "$SYNC_TMP/fresh_prices.json")"
 assert_contains "sync_prices writes SYNC_SUMMARY_FILE" "| Model | Change |" "$(cat "$SYNC_TMP/summary.md")"
 
 # Stale cached rate > new dropped in rate should fall back to 0.25x instead of failing guard
 cat << 'JSON' > "$SYNC_TMP/upstream_drop.json"
 {
-  "gemini/gemini-2.5-pro": {
+  "gemini/gemini-4-argon": {
     "input_cost_per_token": 0.0000002,
     "output_cost_per_token": 0.000001
   }
@@ -323,6 +339,76 @@ cat << 'JSON' > "$SYNC_TMP/upstream_drop.json"
 JSON
 bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_drop.json" "$SYNC_TMP/fresh_prices.json" >/dev/null 2>&1
 assert_eq "sync_prices dropped in falls back cached to 0.25x" "0.05" "$(jq -r '.models.argon.cached' "$SYNC_TMP/fresh_prices.json")"
+
+# Stale cached rate <= new dropped in rate (when in changed) and negative cache_read_input_token_cost
+cp "$REPO_DIR/prices.json" "$SYNC_TMP/stale_prices.json"
+cat << 'JSON' > "$SYNC_TMP/upstream_stale_cached.json"
+{
+  "together_ai/openai/gpt-oss-120b": {
+    "input_cost_per_token": 0.00000015,
+    "output_cost_per_token": 0.0000006
+  },
+  "claude-opus-5-5": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "cache_read_input_token_cost": -0.000001
+  },
+  "gemini/gemini-3.8-flash": {
+    "input_cost_per_token": 0.00000075,
+    "output_cost_per_token": 0.00000375,
+    "cache_read_input_token_cost": -0.000001
+  },
+  "claude-sonnet-5-5": {
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000015
+  },
+  "gemini/gemini-4-neon": {
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000015,
+    "cache_read_input_token_cost": 0
+  }
+}
+JSON
+bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/stale_prices.json" >/dev/null 2>&1
+assert_eq "sync_prices stale cached <= new_in recomputes 0.25x on in change" "0.0375" "$(jq -r '.models["gpt-oss"].cached' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices negative cache_read_input_token_cost falls back cleanly" "0.1875" "$(jq -r '.models.flash.cached' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices negative cache_read_input_token_cost preserves non-0.25x prev.cached" "0.50" "$(jq -r '.models.opus.cached' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices unchanged in preserves non-0.25x prev.cached" "0.30" "$(jq -r '.models.sonnet.cached' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices zero cache_read_input_token_cost accepted" "0" "$(jq -r '.models.neon.cached' "$SYNC_TMP/stale_prices.json")"
+
+# Guard rejects cache_read_input_token_cost > input_cost_per_token
+cat << 'JSON' > "$SYNC_TMP/upstream_bad_cached.json"
+{
+  "gemini/gemini-3.8-flash": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000002,
+    "cache_read_input_token_cost": 0.000002
+  }
+}
+JSON
+if bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_bad_cached.json" "$SYNC_TMP/stale_prices.json" >/dev/null 2>&1; then
+  echo "FAIL: sync_prices should reject cached > in" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+
+# Non-object previous model entry in target prices.json should not crash jq
+jq '.models.flash = "corrupt"' "$REPO_DIR/prices.json" > "$SYNC_TMP/corrupt_prices.json"
+bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/corrupt_prices.json" >/dev/null 2>&1
+assert_eq "sync_prices recovers from non-object prev entry" "0.1875" "$(jq -r '.models.flash.cached' "$SYNC_TMP/corrupt_prices.json")"
+
+# Missing default_from (argon) falls back to valid $om.default, and rejects non-object $om.default
+jq 'del(.models.argon)' "$REPO_DIR/prices.json" > "$SYNC_TMP/no_argon_prices.json"
+bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/no_argon_prices.json" >/dev/null 2>&1
+assert_eq "sync_prices preserves object om.default when default_from missing" "2.00" "$(jq -r '.models.default.in' "$SYNC_TMP/no_argon_prices.json")"
+jq '.models.default = "corrupt"' "$SYNC_TMP/no_argon_prices.json" > "$SYNC_TMP/corrupt_default_prices.json"
+if bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/corrupt_default_prices.json" >/dev/null 2>&1; then
+  echo "FAIL: sync_prices should reject missing default when om.default is non-object" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
 
 # 5. Offline auto_update.sh tests with mock curl shim
 "$REPO_DIR/install.sh" >/dev/null

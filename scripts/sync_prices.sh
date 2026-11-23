@@ -61,7 +61,7 @@ GENERATED=$(jq -n \
     {models: {}, warnings: []};
     ($entry.key) as $k |
     ($entry.value) as $cfg |
-    ($om[$k] // null) as $prev |
+    (if ($om[$k] | type) == "object" then $om[$k] else null end) as $prev |
     ([
       $cfg.candidates[]? |
       . as $cid |
@@ -75,9 +75,9 @@ GENERATED=$(jq -n \
     if $hit != null then
       ($hit.input_cost_per_token * 1000000 | r6) as $in |
       ($hit.output_cost_per_token * 1000000 | r6) as $out |
-      (if ($hit.cache_read_input_token_cost | type) == "number" then
-        ($hit.cache_read_input_token_cost * 1000000 | r6)
-       elif ($prev != null and ($prev.cached | type) == "number" and $prev.cached >= 0 and $prev.cached <= $in) then
+      (if (($hit.cache_read_input_token_cost | type) == "number" and $hit.cache_read_input_token_cost >= 0) then
+        (($hit.cache_read_input_token_cost * 1000000) | r6)
+       elif ($prev != null and ($prev["in"] // -1) == $in and ($prev.cached | type) == "number" and $prev.cached >= 0 and $prev.cached <= $in) then
         $prev.cached
        else
         (($in * 0.25) | r6)
@@ -98,7 +98,7 @@ GENERATED=$(jq -n \
     end
   ) |
   ($s.default_from // "argon") as $df |
-  (.models[$df] // $om.default // null) as $def_src |
+  (.models[$df] // (if ($om.default | type) == "object" then $om.default else null end) // null) as $def_src |
   (if $def_src != null then
     .models["default"] = {
       "in": $def_src["in"],
@@ -160,8 +160,8 @@ DIFF_MD=$(jq -rn --argjson old "$OLD_JSON" --slurpfile new "$TMP_NEW" '
   "| :--- | :--- | ---: | ---: | ---: |\n" +
   ([
     $all_keys[] | . as $k |
-    ($om[$k] // null) as $o |
-    ($nm[$k] // null) as $n |
+    (if ($om[$k] | type) == "object" then $om[$k] else null end) as $o |
+    (if ($nm[$k] | type) == "object" then $nm[$k] else null end) as $n |
     if $o == null and $n != null then
       "| `\($k)` | Added | \(fmt_rate($n["in"])) | \(fmt_rate($n.cached)) | \(fmt_rate($n.out)) |"
     elif $o != null and $n == null then
