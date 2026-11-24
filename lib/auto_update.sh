@@ -1,16 +1,35 @@
 # Shared non-blocking auto-updater for Jenbach prices.json
 # Sourced by statusline.sh and report.sh (Bash 3.2+ compatible).
 
+_jenbach_promote_prices_ttl() {
+  local _jb_p_stamp="$1"
+  local _jb_p_iv_sec="$2"
+  local _jb_p_expected="$3"
+  local _jb_p_st_tmp="$4"
+  if [ -r "$_jb_p_stamp" ] && [ "$(< "$_jb_p_stamp")" = "$_jb_p_expected" ]; then
+    local _jb_done_now=""
+    printf -v _jb_done_now '%(%s)T' -1 2>/dev/null || true
+    if [[ ! "$_jb_done_now" =~ ^[0-9]+$ ]]; then
+      _jb_done_now=$(date +%s 2>/dev/null || echo 0)
+    fi
+    printf '%s\n' "$((_jb_done_now + _jb_p_iv_sec))" > "$_jb_p_st_tmp" 2>/dev/null && mv -f "$_jb_p_st_tmp" "$_jb_p_stamp" 2>/dev/null || rm -f "$_jb_p_st_tmp" 2>/dev/null || true
+  fi
+}
+
 _jenbach_fetch_prices_bg() {
   local _jb_dir="$1"
   local _jb_prices_file="$2"
   local _jb_url="$3"
   _jb_lock_dir="$4"
+  local _jb_stamp_file="$5"
+  local _jb_interval_sec="$6"
+  local _jb_backoff_ts="$7"
 
   local _jb_pid="$$"
   _jb_hdr_tmp="${_jb_dir}/.prices.hdr.${_jb_pid}"
   _jb_body_tmp="${_jb_dir}/.prices.body.${_jb_pid}"
-  trap 'rm -rf "$_jb_lock_dir" "$_jb_hdr_tmp" "$_jb_body_tmp" 2>/dev/null || true' EXIT
+  _jb_st_tmp="${_jb_stamp_file}.tmp.bg.${_jb_pid}"
+  trap 'rm -rf "$_jb_lock_dir" "$_jb_hdr_tmp" "$_jb_body_tmp" "$_jb_st_tmp" 2>/dev/null || true' EXIT
 
   local _jb_etag=""
   if [ -s "$_jb_prices_file" ] && [ -r "${_jb_dir}/.prices.etag" ]; then
@@ -25,6 +44,7 @@ _jenbach_fetch_prices_bg() {
   fi
 
   if [ "$_jb_http_code" = "304" ]; then
+    _jenbach_promote_prices_ttl "$_jb_stamp_file" "$_jb_interval_sec" "$_jb_backoff_ts" "$_jb_st_tmp"
     return 0
   fi
 
@@ -44,6 +64,7 @@ _jenbach_fetch_prices_bg() {
       if [ -n "$_jb_new_etag" ]; then
         printf '%s\n' "$_jb_new_etag" > "${_jb_dir}/.prices.etag.tmp.${_jb_pid}" 2>/dev/null && mv -f "${_jb_dir}/.prices.etag.tmp.${_jb_pid}" "${_jb_dir}/.prices.etag" 2>/dev/null || true
       fi
+      _jenbach_promote_prices_ttl "$_jb_stamp_file" "$_jb_interval_sec" "$_jb_backoff_ts" "$_jb_st_tmp"
     fi
   fi
 
@@ -134,12 +155,13 @@ jenbach_maybe_update_prices() {
   fi
   printf '%s\n' "$_jb_now" > "${_jb_lock_dir}/ts" 2>/dev/null || true
 
-  # Atomically write next_check before spawning background worker
-  local _jb_next_check=$((_jb_now + _jb_interval * 3600))
-  printf '%s\n' "$_jb_next_check" > "${_jb_stamp_file}.tmp.$$" 2>/dev/null && mv -f "${_jb_stamp_file}.tmp.$$" "$_jb_stamp_file" 2>/dev/null || true
+  # Atomically write 15-minute retry backoff before spawning background worker
+  local _jb_interval_sec=$((_jb_interval * 3600))
+  local _jb_backoff_ts=$((_jb_now + 900))
+  printf '%s\n' "$_jb_backoff_ts" > "${_jb_stamp_file}.tmp.$$" 2>/dev/null && mv -f "${_jb_stamp_file}.tmp.$$" "$_jb_stamp_file" 2>/dev/null || rm -f "${_jb_stamp_file}.tmp.$$" 2>/dev/null || true
 
   # Spawn FD-closed detached background worker
-  ( _jenbach_fetch_prices_bg "$_jb_dir" "$_jb_prices_file" "$_jb_url" "$_jb_lock_dir" ) </dev/null >/dev/null 2>&1 &
+  ( _jenbach_fetch_prices_bg "$_jb_dir" "$_jb_prices_file" "$_jb_url" "$_jb_lock_dir" "$_jb_stamp_file" "$_jb_interval_sec" "$_jb_backoff_ts" ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
 
   return 0

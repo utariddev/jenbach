@@ -11,6 +11,7 @@ mkdir -p "$JB_DIR/usage_logs" "$JB_DIR/lib"
 cp -n "$AGY_DIR/usage_logs"/*.json "$JB_DIR/usage_logs/" 2>/dev/null || true
 cp "$SCRIPT_DIR/lib/common.jq" "$JB_DIR/lib/common.jq"
 cp "$SCRIPT_DIR/lib/auto_update.sh" "$JB_DIR/lib/auto_update.sh"
+cp "$SCRIPT_DIR/lib/app_update.sh" "$JB_DIR/lib/app_update.sh"
 cp "$SCRIPT_DIR/lib/subagent_sync.py" "$JB_DIR/lib/subagent_sync.py"
 cp "$SCRIPT_DIR/statusline.sh" "$JB_DIR/statusline.sh"
 cp "$SCRIPT_DIR/report.sh" "$JB_DIR/report.sh"
@@ -29,7 +30,7 @@ else
 fi
 
 # Migrate or initialize report_config.json atomically without losing existing settings
-DEFAULT_CFG='{"short_tokens":true,"statusline_short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"chain_enabled":true,"chained_command":"","theme":"modern","color":"auto","auto_update_prices":true,"price_check_interval_hours":24,"prices_url":"https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
+DEFAULT_CFG='{"short_tokens":true,"statusline_short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"chain_enabled":true,"chained_command":"","theme":"modern","color":"auto","auto_update_prices":true,"price_check_interval_hours":24,"prices_url":"https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
 if [ ! -f "$CFG_FILE" ] || ! jq -e 'type == "object"' "$CFG_FILE" >/dev/null 2>&1; then
   printf '%s\n' "$DEFAULT_CFG" > "${CFG_FILE}.tmp.$$" && mv "${CFG_FILE}.tmp.$$" "$CFG_FILE"
 else
@@ -102,7 +103,7 @@ fi
 TMP_S=$(jq --arg cmd "$SL_CMD" '.statusLine = {"type": "command", "command": $cmd, "enabled": true, "stack_with_default": true}' "$SETTINGS_FILE")
 printf '%s\n' "$TMP_S" > "${SETTINGS_FILE}.tmp.$$" && mv "${SETTINGS_FILE}.tmp.$$" "$SETTINGS_FILE"
 
-echo "Jenbach installed! Run '!jenbach' inside agy."
+echo "Jenbach installed! Run 'jenbach' in your terminal or '!jenbach' inside agy."
 if ! command -v jenbach >/dev/null 2>&1; then
   if [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "cygwin"* ]]; then
     echo "Note: Add \$HOME/bin to your PATH to run 'jenbach' from the terminal."

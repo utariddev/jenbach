@@ -51,6 +51,10 @@ if [ -r "$LIB_DIR/auto_update.sh" ]; then
   jenbach_maybe_update_prices "$JB_DIR" "$CFG_FILE" "$PRICES_FILE" "$CFG_RAW"
   jenbach_maybe_sync_subagents "$LOG_DIR" "$SID" "$AGY_DIR" "$PRICES_FILE" "$LIB_DIR" "$SUB_SIG" "$NOW"
 fi
+if [ -r "$LIB_DIR/app_update.sh" ]; then
+  . "$LIB_DIR/app_update.sh"
+  jenbach_maybe_check_app_update "$JB_DIR" "$CFG_FILE" "$CFG_RAW"
+fi
 PRICES_RAW=""; [ -r "$PRICES_FILE" ] && PRICES_RAW=$(< "$PRICES_FILE")
 QUOTA_RAW=""; [ -r "$QUOTA_FILE" ] && QUOTA_RAW=$(< "$QUOTA_FILE")
 SUB_RAW=""; [ "$SID" != "none" ] && [ -r "$LOG_DIR/.sub_${SID}.json" ] && SUB_RAW=$(< "$LOG_DIR/.sub_${SID}.json")

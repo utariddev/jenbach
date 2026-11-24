@@ -75,6 +75,7 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 | `!jenbach set color [auto\|on\|off]` | Control terminal color output |
 | `!jenbach set auto-update [on\|off]` | Enable or disable automatic background price checks |
 | `!jenbach set check-interval <1..720>` | Set how often (in hours) prices are checked automatically |
+| `!jenbach set check-updates [on\|off]` | Enable or disable automatic background app update checks |
 | `!jenbach set default-view [cycle\|all]` | Set the default report view for `!jenbach` |
 | `!jenbach set subagent-mode [split\|combined]` | Show subagents as tree rows (`split`) or merged into parent (`combined`) |
 | `!jenbach set status-sub [on\|off]` | Show or hide `(Sub: $...)` detail in the statusline |
@@ -82,6 +83,7 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 | `!jenbach info` | Show version, GitHub URL, paths, pricing status, and environment |
 | `!jenbach --version` | Print installed Jenbach version |
 | `!jenbach prices` | View current model pricing per 1M tokens |
+| `!jenbach update [--force]` | Update Jenbach to the latest GitHub release |
 | `!jenbach update-prices [url]` | Refresh model prices immediately (optionally from a custom URL) |
 | `!jenbach reset` | Delete all recorded session logs |
 
@@ -92,6 +94,24 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 | `NO_COLOR=1` | Disable ANSI color output in both statusline and usage reports |
 | `JENBACH_WIDTH=<cols>` | Override detected terminal column width for report tables |
 | `JENBACH_HEIGHT=<rows>` | Override detected terminal row height for session history auto-fit (`0` disables height limit) |
+
+## Updating
+
+Jenbach checks GitHub Releases in the background (once every 24 hours) and shows a passive banner in `jenbach` and `jenbach info` when a newer version is available.
+
+To update to the latest release, run:
+
+~~~bash
+jenbach update
+~~~
+
+Or inside `agy`:
+
+~~~text
+!jenbach update
+~~~
+
+Use `jenbach update --force` to reinstall the latest release even if you are already on the same version. All user settings (`report_config.json`) and recorded session logs (`usage_logs`) are preserved.
 
 ## Uninstallation
 

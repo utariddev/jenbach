@@ -57,6 +57,8 @@ if [ ! -f "$CFG_FILE" ] || ! jq -e 'type == "object"' "$CFG_FILE" >/dev/null 2>&
   "auto_update_prices": true,
   "price_check_interval_hours": 24,
   "prices_url": "https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json",
+  "check_app_updates": true,
+  "app_repo_url": "https://github.com/utariddev/jenbach",
   "default_view": "cycle",
   "subagent_cost_mode": "split",
   "statusline_subagent_detail": true
@@ -65,10 +67,13 @@ JSON
 fi
 
 case "${1:-}" in
-  update-prices|-v|--version|help|-h|--help) ;;
+  update|update-prices|-v|--version|help|-h|--help) ;;
   *)
     if ! { [ "${1:-}" = "set" ] && [ "${2:-}" = "auto-update" ]; }; then
       [ -r "$LIB_DIR/auto_update.sh" ] && . "$LIB_DIR/auto_update.sh" && jenbach_maybe_update_prices "$JB_DIR" "$CFG_FILE" "$PRICES_FILE"
+    fi
+    if ! { [ "${1:-}" = "set" ] && { [ "${2:-}" = "auto-update" ] || [ "${2:-}" = "check-updates" ]; }; }; then
+      [ -r "$LIB_DIR/app_update.sh" ] && . "$LIB_DIR/app_update.sh" && jenbach_maybe_check_app_update "$JB_DIR" "$CFG_FILE"
     fi
     ;;
 esac
@@ -86,6 +91,15 @@ read_version() {
   fi
   [ -n "$v" ] || v="unknown"
   printf '%s' "$v"
+}
+
+get_app_update_ver() {
+  local local_ver="$1"
+  local latest_ver=""
+  [ -r "$JB_DIR/.latest_version" ] && latest_ver=$(tr -d '[:space:]' < "$JB_DIR/.latest_version")
+  if [[ "$local_ver" =~ ^[1-9][0-9]*$ ]] && [[ "$latest_ver" =~ ^[1-9][0-9]*$ ]] && (( 10#$latest_ver > 10#$local_ver )); then
+    printf '%s' "$latest_ver"
+  fi
 }
 
 validate_ymd() {
@@ -122,11 +136,13 @@ Commands:
   set color [auto|on|off]        Set ANSI color mode
   set auto-update [on|off]       Toggle automatic background price checks
   set check-interval <1..720>    Set price check interval in hours
+  set check-updates [on|off]     Toggle automatic background app update checks
   set default-view [cycle|all]   Set default report view
   set subagent-mode [split|combined]  Set subagent report display mode
   set status-sub [on|off]        Toggle subagent detail in statusline
   set auto-fit [on|off]          Toggle terminal height auto-fit for session history
   prices                         Show model pricing table
+  update [--force]               Update Jenbach to latest GitHub release
   update-prices [url]            Fetch latest prices.json
   reset                          Clear all recorded session logs
   help, -h, --help               Show this help message
@@ -162,7 +178,8 @@ show_current_settings() {
     "[11] Subagent Report Mode             : " + paint($sub_mode; "bold_cyan"; $use_color),
     "[12] Statusline Subagent Detail       : " + badge(.statusline_subagent_detail != false),
     "[13] Auto-Fit Terminal Height         : " + badge(.auto_fit_height != false),
-    "[14] Reset / Clear All Session Logs",
+    "[14] Check App Updates                : " + badge(.check_app_updates != false),
+    "[15] Reset / Clear All Session Logs",
     (if $plain then "======================================================" else paint("──────────────────────────────────────────────────────"; "dim"; $use_color) end)
   ' "$CFG_FILE"
 }
@@ -223,11 +240,17 @@ case "${1:-}" in
     exit 0
     ;;
   -v|--version)
-    echo "jenbach $(read_version)"
+    _v=$(read_version)
+    if [[ "$_v" =~ ^[0-9] ]]; then
+      echo "jenbach v${_v}"
+    else
+      echo "jenbach ${_v}"
+    fi
     exit 0
     ;;
   info)
     VER=$(read_version)
+    APP_UPDATE_VER=$(get_app_update_ver "$VER")
     CFG_JSON=$(jq -c '.' "$CFG_FILE" 2>/dev/null)
     [ -z "$CFG_JSON" ] && CFG_JSON='{"theme":"modern","color":"auto","default_view":"cycle"}'
     PRICES_UPD="missing"
@@ -257,6 +280,7 @@ case "${1:-}" in
       --arg is_tty "$IS_TTY" \
       --arg no_color "${NO_COLOR:-}" \
       --arg ver "$VER" \
+      --arg app_update_ver "$APP_UPDATE_VER" \
       --arg jb_dir "$JB_DIR" \
       --arg cfg_file "$CFG_FILE" \
       --arg prices_upd "$PRICES_UPD" \
@@ -274,6 +298,9 @@ case "${1:-}" in
       (if ($plain or $color_mode == "off" or $no_color != "") then false elif $color_mode == "on" then true else ($is_tty == "true") end) as $use_color |
       [
         [{t: "Version    : ", c: "bold"}, {t: $ver, c: "bold_cyan"}],
+        (if ($cfg.check_app_updates != false and $app_update_ver != "") then
+           [{t: "Update     : ", c: "bold"}, {t: "v\($ver) \(if $plain then "->" else "→" end) v\($app_update_ver) (run \u0027jenbach update\u0027)", c: "bold_cyan"}]
+         else empty end),
         [{t: "GitHub     : ", c: "bold"}, {t: "https://github.com/utariddev/jenbach", c: "cyan"}],
         [{t: "Install Dir: ", c: "bold"}, {t: $jb_dir, c: ""}],
         [{t: "Config     : ", c: "bold"}, {t: $cfg_file, c: ""}],
@@ -457,6 +484,12 @@ case "${1:-}" in
           exit 1
         fi
         ;;
+      check-updates)
+        set_bool "check_app_updates" "${3:-}"
+        case "${3:-}" in
+          on|true|1) rm -f "$JB_DIR/.app_update_next_check" ;;
+        esac
+        ;;
       default-view)
         case "${3:-}" in
           cycle|all)
@@ -482,7 +515,7 @@ case "${1:-}" in
       status-sub) set_bool "statusline_subagent_detail" "${3:-}" ;;
       auto-fit)   set_bool "auto_fit_height" "${3:-}" ;;
       *)
-        echo "Usage: jenbach set [short|status-short|history|limit|chain|theme|color|auto-update|check-interval|default-view|subagent-mode|status-sub|auto-fit] [value]" >&2
+        echo "Usage: jenbach set [short|status-short|history|limit|chain|theme|color|auto-update|check-interval|check-updates|default-view|subagent-mode|status-sub|auto-fit] [value]" >&2
         exit 1
         ;;
     esac
@@ -527,6 +560,18 @@ case "${1:-}" in
     ' "$PRICES_FILE"
     exit 0
     ;;
+  update)
+    if [ $# -gt 2 ] || { [ $# -eq 2 ] && [ "${2:-}" != "--force" ]; }; then
+      echo "Usage: jenbach update [--force]" >&2
+      exit 1
+    fi
+    if [ ! -r "$LIB_DIR/app_update.sh" ]; then
+      echo "Error: $LIB_DIR/app_update.sh not found." >&2
+      exit 1
+    fi
+    . "$LIB_DIR/app_update.sh"
+    jenbach_run_app_update "$JB_DIR" "$CFG_FILE" "$(read_version)" "${2:-}"; exit $?
+    ;;
   update-prices)
     CFG_URL=$(jq -r '.prices_url // ""' "$CFG_FILE" 2>/dev/null || true)
     [ -z "$CFG_URL" ] && CFG_URL="https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json"
@@ -568,7 +613,7 @@ case "${1:-}" in
         show_current_settings
         echo "[q] Save & Exit"
         echo "------------------------------------------------------"
-        read -r -p "Select option [1-14, q]: " choice
+        read -r -p "Select option [1-15, q]: " choice
         case "$choice" in
           1) toggle_bool "short_tokens" ;;
           2) toggle_bool "statusline_short_tokens" ;;
@@ -606,6 +651,12 @@ case "${1:-}" in
           12) toggle_bool "statusline_subagent_detail" ;;
           13) toggle_bool "auto_fit_height" ;;
           14)
+            toggle_bool "check_app_updates"
+            if [ "$(jq -r '.check_app_updates != false' "$CFG_FILE" 2>/dev/null)" = "true" ]; then
+              rm -f "$JB_DIR/.app_update_next_check"
+            fi
+            ;;
+          15)
             read -r -p "Are you sure you want to delete all logs? (y/N): " confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
               rm -f "$LOG_DIR"/*.json "$LOG_DIR"/.*.tmp.* "$LOG_DIR"/.sub_*.json "$LOG_DIR"/.sub_*.ttl 2>/dev/null
@@ -630,10 +681,12 @@ case "${1:-}" in
       echo "  !jenbach set color [auto|on|off]"
       echo "  !jenbach set auto-update [on|off]"
       echo "  !jenbach set check-interval <hours>"
+      echo "  !jenbach set check-updates [on|off]"
       echo "  !jenbach set default-view [cycle|all]"
       echo "  !jenbach set subagent-mode [split|combined]"
       echo "  !jenbach set status-sub [on|off]"
       echo "  !jenbach set auto-fit [on|off]"
+      echo "  !jenbach update [--force]"
       echo "  !jenbach reset"
     fi
     exit 0
@@ -762,13 +815,16 @@ if [ ${#LOG_FILES[@]} -eq 0 ]; then
 fi
 
 CFG_JSON=$(jq -c '.' "$CFG_FILE" 2>/dev/null)
-[ -z "$CFG_JSON" ] && CFG_JSON='{"short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"theme":"modern","color":"auto","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
+[ -z "$CFG_JSON" ] && CFG_JSON='{"short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"theme":"modern","color":"auto","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
+LOCAL_VER=$(read_version)
+APP_UPDATE_VER=$(get_app_update_ver "$LOCAL_VER")
 
 if [ -z "$FILTER_MODE" ]; then
   FILTER_MODE=$(printf '%s' "$CFG_JSON" | jq -r 'if (.default_view // "cycle") == "all" then "all" else "cycle" end')
 fi
 
 QUOTA_RAW=""; [ -r "$QUOTA_FILE" ] && QUOTA_RAW=$(< "$QUOTA_FILE")
+PRICES_RAW=""; [ -r "$PRICES_FILE" ] && PRICES_RAW=$(< "$PRICES_FILE")
 printf -v TODAY_YMD '%(%Y-%m-%d)T' -1 2>/dev/null || true
 [[ "$TODAY_YMD" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || TODAY_YMD=$(date +"%Y-%m-%d")
 printf -v NOW_STR '%(%Y-%m-%d %H:%M)T' -1 2>/dev/null || true
@@ -897,12 +953,15 @@ jq -L "$LIB_DIR" -r -s \
   --arg is_tty "$IS_TTY" \
   --arg no_color "${NO_COLOR:-}" \
   --arg quota_raw "$QUOTA_RAW" \
+  --arg prices_raw "$PRICES_RAW" \
   --arg filter_mode "$FILTER_MODE" \
   --arg cycle_bucket "$CYCLE_BUCKET" \
   --arg filter_month "$FILTER_MONTH" \
   --arg filter_from "$FILTER_FROM" \
   --arg filter_to "$FILTER_TO" \
-  --arg today_ymd "$TODAY_YMD" '
+  --arg today_ymd "$TODAY_YMD" \
+  --arg local_ver "$LOCAL_VER" \
+  --arg app_update_ver "$APP_UPDATE_VER" '
   include "common";
 
   ($sidecars_arr[0] // {} | if type == "object" then . else {} end) as $sidecars |
@@ -913,6 +972,7 @@ jq -L "$LIB_DIR" -r -s \
   (if ($plain or $color_mode == "off" or $no_color != "") then false elif $color_mode == "on" then true else ($is_tty == "true") end) as $use_color |
   ($cfg.short_tokens != false) as $short |
   ($cfg.subagent_cost_mode // "split") as $sub_mode |
+  ($cfg.check_app_updates != false and $app_update_ver != "") as $has_app_update |
 
   def norm_model(m):
     (m // "Unknown" | tostring | if . == "" then "Unknown" else . end);
@@ -928,6 +988,11 @@ jq -L "$LIB_DIR" -r -s \
 
   ($quota_raw | try fromjson catch {} | if type == "object" then . else {} end) as $qstate |
   sanitize_quota_buckets($qstate.buckets) as $qbuckets |
+  ($prices_raw | try fromjson catch null |
+    if (type == "object") and ((.updated_at | type) == "string") and (.updated_at | test("\\A[0-9A-Za-z._:-]{1,20}\\z")) then
+      .updated_at
+    else "N/A" end
+  ) as $prices_upd |
   ((($today_ymd + "T12:00:00Z") | fromdateiso8601) - (6 * 86400) | strftime("%Y-%m-%d")) as $week_start |
 
   map(
@@ -1113,7 +1178,7 @@ jq -L "$LIB_DIR" -r -s \
       ($sorted_sessions[0:$max_parents]) as $cand_parents |
       ($cfg.auto_fit_height != false and $explicit_limit == 0 and $term_rows > 0) as $do_fit |
       (if $do_fit then
-         (8 + (if $theme == "compact" then 4 else 5 end) + (($model_rows | length) + 5) + 4) as $fixed_lines |
+         (8 + (if $theme == "compact" then 4 else 5 end) + (($model_rows | length) + 5) + 4 + (if $has_app_update then 1 else 0 end)) as $fixed_lines |
          ([ ($term_rows - $fixed_lines), 3 ] | max) as $row_budget |
          (reduce $cand_parents[] as $s (
             {items: [], used: 0, stopped: false};
@@ -1254,13 +1319,21 @@ jq -L "$LIB_DIR" -r -s \
         ),
         render_table($t2_headers; ["l", "l", "l", "r", "r", "r", "r", "r", "r", "l"]; $hist_rows; $plain; $use_color; $target_w),
         (if ($shown_sessions | length) < $n_sess then
+           (if $term_cols >= 100 then "\(if $plain then " | " else " · " end)Prices: \($prices_upd)" else "" end) as $p_sfx |
            (if $do_fit and (($shown_sessions | length) < ($cand_parents | length)) then
-              paint("Showing \($shown_sessions | length) of \($n_sess) sessions (fit to terminal). Run \u0027jenbach -n \($n_sess)\u0027 to view all."; "dim"; $use_color)
+              paint("Showing \($shown_sessions | length) of \($n_sess) sessions (fit to terminal). Run \u0027jenbach -n \($n_sess)\u0027 to view all.\($p_sfx)"; "dim"; $use_color)
             else
-              paint("Showing \($shown_sessions | length) of \($n_sess) sessions. Run \u0027jenbach -n \($n_sess)\u0027 to view all."; "dim"; $use_color)
+              paint("Showing \($shown_sessions | length) of \($n_sess) sessions. Run \u0027jenbach -n \($n_sess)\u0027 to view all.\($p_sfx)"; "dim"; $use_color)
             end)
-         else empty end)
-      else empty end)
+         else
+           paint("Prices updated: \($prices_upd)"; "dim"; $use_color)
+         end)
+      else
+        paint("Prices updated: \($prices_upd)"; "dim"; $use_color)
+      end),
+      (if $has_app_update then
+         paint("Update available: v\($local_ver) \(if $plain then "->" else "→" end) v\($app_update_ver) \(if $plain then "-" else "—" end) run \u0027jenbach update\u0027"; "bold_cyan"; $use_color)
+       else empty end)
     )
   end
 ' "${LOG_FILES[@]}"

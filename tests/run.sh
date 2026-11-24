@@ -41,7 +41,7 @@ assert_not_contains() {
 }
 
 # 1. Syntax checks
-bash -n "$REPO_DIR/statusline.sh" "$REPO_DIR/report.sh" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh" "$REPO_DIR/lib/auto_update.sh" "$REPO_DIR/scripts/sync_prices.sh" "$REPO_DIR/tests/run.sh"
+bash -n "$REPO_DIR/statusline.sh" "$REPO_DIR/report.sh" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh" "$REPO_DIR/lib/auto_update.sh" "$REPO_DIR/lib/app_update.sh" "$REPO_DIR/scripts/sync_prices.sh" "$REPO_DIR/tests/run.sh"
 if command -v python3 >/dev/null 2>&1; then
   PYC_TMP=$(mktemp -d)
   PYTHONPYCACHEPREFIX="$PYC_TMP" python3 -m py_compile "$REPO_DIR/lib/subagent_sync.py"
@@ -126,17 +126,20 @@ export HOME="$TMP_HOME"
 JB_DIR="$HOME/.gemini/antigravity-cli/jenbach"
 assert_eq "lib/common.jq installed" "true" "$([ -f "$JB_DIR/lib/common.jq" ] && echo true || echo false)"
 assert_eq "lib/auto_update.sh installed" "true" "$([ -f "$JB_DIR/lib/auto_update.sh" ] && echo true || echo false)"
+assert_eq "lib/app_update.sh installed" "true" "$([ -f "$JB_DIR/lib/app_update.sh" ] && echo true || echo false)"
 assert_eq "lib/subagent_sync.py installed" "true" "$([ -x "$JB_DIR/lib/subagent_sync.py" ] && echo true || echo false)"
 assert_eq "VERSION installed" "true" "$([ -f "$JB_DIR/VERSION" ] && echo true || echo false)"
 assert_eq "config theme migrated" "modern" "$(jq -r '.theme' "$JB_DIR/report_config.json")"
 assert_eq "config color migrated" "auto" "$(jq -r '.color' "$JB_DIR/report_config.json")"
 assert_eq "config auto_update_prices migrated" "true" "$(jq -r '.auto_update_prices' "$JB_DIR/report_config.json")"
+assert_eq "config check_app_updates migrated" "true" "$(jq -r '.check_app_updates' "$JB_DIR/report_config.json")"
 assert_eq "config default_view migrated" "cycle" "$(jq -r '.default_view' "$JB_DIR/report_config.json")"
 assert_eq "config subagent_cost_mode migrated" "split" "$(jq -r '.subagent_cost_mode' "$JB_DIR/report_config.json")"
 assert_eq "config statusline_subagent_detail migrated" "true" "$(jq -r '.statusline_subagent_detail' "$JB_DIR/report_config.json")"
 
-# Pre-seed .prices_next_check so baseline tests stay offline before dedicated auto-update suite
+# Pre-seed .prices_next_check and .app_update_next_check so baseline tests stay offline before dedicated auto-update suites
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$JB_DIR/.prices_next_check"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$JB_DIR/.app_update_next_check"
 
 # Statusline responsive width tests
 PAYLOAD_BASE='{"session_id":"s1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":12400,"total_output_tokens":1800,"used_percentage":14,"current_usage":{"input_tokens":2400,"cache_read_input_tokens":10000}},"cost":{"total_usd":0.05,"subagent_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.845}}}'
@@ -412,6 +415,7 @@ fi
 
 # 5. Offline auto_update.sh tests with mock curl shim
 "$REPO_DIR/install.sh" >/dev/null
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$JB_DIR/.app_update_next_check"
 MOCK_BIN="$TMP_HOME/mock_bin"
 MOCK_STATE="$TMP_HOME/mock_state"
 mkdir -p "$MOCK_BIN" "$MOCK_STATE"
@@ -448,6 +452,16 @@ if [ "$MODE" = "304" ]; then
 elif [ "$MODE" = "bad_json" ]; then
   [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 200 OK\r\nETag: "bad1"\r\n\r\n' > "$HDR_FILE"
   [ -n "$OUT_FILE" ] && printf '{"updated_at":"2026-11-21","models":{"default":{"in":9999,"cached":0,"out":10}}}\n' > "$OUT_FILE"
+  [ "$WRITE_FMT" = "%{http_code}" ] && printf '200'
+  exit 0
+elif [ "$MODE" = "000" ]; then
+  [ -n "$HDR_FILE" ] && : > "$HDR_FILE"
+  [ -n "$OUT_FILE" ] && : > "$OUT_FILE"
+  [ "$WRITE_FMT" = "%{http_code}" ] && printf '000'
+  exit 7
+elif [ "$MODE" = "empty_200" ]; then
+  [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 200 OK\r\n\r\n' > "$HDR_FILE"
+  [ -n "$OUT_FILE" ] && : > "$OUT_FILE"
   [ "$WRITE_FMT" = "%{http_code}" ] && printf '200'
   exit 0
 elif [ "$MODE" = "500" ]; then
@@ -490,11 +504,14 @@ wait_for_bg() {
 # 5a. HTTP 200 + ETag -> updates prices.json, writes .prices.etag and .prices_next_check
 rm -f "$JB_DIR/.prices_next_check" "$JB_DIR/.prices.etag" "$MOCK_STATE/calls.log"
 echo "200" > "$MOCK_STATE/mode"
+NOW_200=$(date +%s)
 "$JB_DIR/report.sh" prices >/dev/null
 wait_for_bg
 assert_eq "auto_update 200 updated prices.json" "2099-01-01" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
 assert_eq "auto_update 200 wrote .prices.etag" '"v2-etag"' "$(cat "$JB_DIR/.prices.etag")"
 assert_eq "auto_update 200 wrote .prices_next_check" "true" "$([ -s "$JB_DIR/.prices_next_check" ] && echo true || echo false)"
+NEXT_200=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "auto_update 200 promoted TTL to ~24h" "true" "$([ "$NEXT_200" -ge $((NOW_200 + 86340)) ] && [ "$NEXT_200" -le $((NOW_200 + 86460)) ] && echo true || echo false)"
 
 # 5b. TTL fast path -> subsequent statusline.sh and report.sh do not invoke mock curl
 CALLS_BEFORE=$(wc -l < "$MOCK_STATE/calls.log")
@@ -504,20 +521,26 @@ printf '%s' "$PAYLOAD_BASE" | "$JB_DIR/statusline.sh" >/dev/null
 CALLS_AFTER=$(wc -l < "$MOCK_STATE/calls.log")
 assert_eq "TTL fast path 0 curl calls" "$CALLS_BEFORE" "$CALLS_AFTER"
 
-# 5c. HTTP 304 -> sends If-None-Match and leaves prices.json untouched
+# 5c. HTTP 304 -> sends If-None-Match and leaves prices.json untouched, promotes TTL
 rm -f "$JB_DIR/.prices_next_check"
 echo "304" > "$MOCK_STATE/mode"
+NOW_304=$(date +%s)
 "$JB_DIR/report.sh" prices >/dev/null
 wait_for_bg
 assert_contains "HTTP 304 sent If-None-Match" "If-None-Match: \"v2-etag\"" "$(tail -n 1 "$MOCK_STATE/calls.log")"
 assert_eq "HTTP 304 preserved prices.json" "2099-01-01" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
+NEXT_304=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "HTTP 304 promoted TTL to ~24h" "true" "$([ "$NEXT_304" -ge $((NOW_304 + 86340)) ] && [ "$NEXT_304" -le $((NOW_304 + 86460)) ] && echo true || echo false)"
 
-# 5d. HTTP 200 with out-of-range JSON -> rejected cleanly
+# 5d. HTTP 200 with out-of-range JSON -> rejected cleanly, keeps 15m backoff
 rm -f "$JB_DIR/.prices_next_check"
 echo "bad_json" > "$MOCK_STATE/mode"
+NOW_BAD=$(date +%s)
 "$JB_DIR/report.sh" prices >/dev/null
 wait_for_bg
 assert_eq "bad_json rejected, prices.json preserved" "2099-01-01" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
+NEXT_BAD=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "bad_json kept 15m backoff" "true" "$([ "$NEXT_BAD" -ge $((NOW_BAD + 840)) ] && [ "$NEXT_BAD" -le $((NOW_BAD + 960)) ] && echo true || echo false)"
 
 # 5e. set auto-update off -> mock curl never invoked
 "$JB_DIR/report.sh" set auto-update off >/dev/null
@@ -583,13 +606,51 @@ wait_for_bg
 assert_eq "pipe EOF background curl completed" "2099-03-03" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
 echo "0" > "$MOCK_STATE/delay"
 
-# 5i. HTTP 500 leaves prices.json and .prices.etag untouched
+# 5i. HTTP 500 leaves prices.json and .prices.etag untouched and keeps 15m backoff
 rm -f "$JB_DIR/.prices_next_check"
 echo "500" > "$MOCK_STATE/mode"
+NOW_500=$(date +%s)
 "$JB_DIR/report.sh" prices >/dev/null
 wait_for_bg
 assert_eq "HTTP 500 preserves prices.json" "2099-03-03" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
 assert_eq "HTTP 500 preserves .prices.etag" '"v2-etag"' "$(cat "$JB_DIR/.prices.etag")"
+NEXT_500=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "HTTP 500 kept 15m backoff" "true" "$([ "$NEXT_500" -ge $((NOW_500 + 840)) ] && [ "$NEXT_500" -le $((NOW_500 + 960)) ] && echo true || echo false)"
+
+# 5i2. HTTP 000 (offline/sandbox curl exit 7) keeps 15m backoff
+rm -f "$JB_DIR/.prices_next_check"
+echo "000" > "$MOCK_STATE/mode"
+NOW_000=$(date +%s)
+"$JB_DIR/report.sh" prices >/dev/null
+wait_for_bg
+assert_eq "HTTP 000 preserves prices.json" "2099-03-03" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
+NEXT_000=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "HTTP 000 kept 15m backoff" "true" "$([ "$NEXT_000" -ge $((NOW_000 + 840)) ] && [ "$NEXT_000" -le $((NOW_000 + 960)) ] && echo true || echo false)"
+
+# 5i3. Empty HTTP 200 body keeps 15m backoff
+rm -f "$JB_DIR/.prices_next_check"
+echo "empty_200" > "$MOCK_STATE/mode"
+NOW_E200=$(date +%s)
+"$JB_DIR/report.sh" prices >/dev/null
+wait_for_bg
+assert_eq "empty_200 preserves prices.json" "2099-03-03" "$(jq -r '.updated_at' "$JB_DIR/prices.json")"
+NEXT_E200=$(cat "$JB_DIR/.prices_next_check")
+assert_eq "empty_200 kept 15m backoff" "true" "$([ "$NEXT_E200" -ge $((NOW_E200 + 840)) ] && [ "$NEXT_E200" -le $((NOW_E200 + 960)) ] && echo true || echo false)"
+
+# 5i4. Compare-and-promote skips when .prices_next_check is deleted or overwritten mid-flight
+(
+  . "$JB_DIR/lib/auto_update.sh"
+  PROMOTE_STAMP="$TMP_HOME/.promote_test_stamp"
+  PROMOTE_TMP="$TMP_HOME/.promote_test_tmp"
+  rm -f "$PROMOTE_STAMP" "$PROMOTE_TMP"
+  _jenbach_promote_prices_ttl "$PROMOTE_STAMP" 43200 12345 "$PROMOTE_TMP"
+  [ ! -f "$PROMOTE_STAMP" ] || exit 1
+  printf '9999999999\n' > "$PROMOTE_STAMP"
+  _jenbach_promote_prices_ttl "$PROMOTE_STAMP" 43200 12345 "$PROMOTE_TMP"
+  [ "$(cat "$PROMOTE_STAMP")" = "9999999999" ] || exit 1
+  rm -f "$PROMOTE_STAMP" "$PROMOTE_TMP"
+)
+assert_eq "compare-and-promote respects mid-flight delete/overwrite" "0" "$?"
 
 # 5j. Missing prices.json with existing .prices.etag skips If-None-Match and restores prices.json
 rm -f "$JB_DIR/.prices_next_check" "$JB_DIR/prices.json"
@@ -630,8 +691,8 @@ fi
 
 # 6. Info, version, quota cycle detection, and date/cycle filter tests
 VER_EXPECTED=$(tr -d '[:space:]' < "$REPO_DIR/VERSION")
-assert_eq "--version output" "jenbach $VER_EXPECTED" "$("$JB_DIR/report.sh" --version)"
-assert_eq "-v output" "jenbach $VER_EXPECTED" "$("$JB_DIR/report.sh" -v)"
+assert_eq "--version output" "jenbach v$VER_EXPECTED" "$("$JB_DIR/report.sh" --version)"
+assert_eq "-v output" "jenbach v$VER_EXPECTED" "$("$JB_DIR/report.sh" -v)"
 
 "$JB_DIR/report.sh" set theme modern >/dev/null
 "$JB_DIR/report.sh" set color on >/dev/null
@@ -970,6 +1031,7 @@ assert_eq "wide 120 shows base model in both tables" "2" "$(printf '%s\n' "$REP_
 assert_eq "wide 120 shows Think header in both tables" "2" "$(printf '%s\n' "$REP_W120" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -c 'Think' || true)"
 assert_eq "wide 120 shows Medium in Think column in both tables" "2" "$(printf '%s\n' "$REP_W120" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -c 'Medium' || true)"
 assert_eq "wide 120 unified line width 104" "104" "$(printf '%s\n' "$REP_W120" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^(╭|│|╰|Model |─|Gemini |GRAND |Date |[0-9]{2}-[0-9]{2} )' | awk '{print length($0)}' | sort -u)"
+assert_contains "modern untrimmed footer shows Prices updated" "Prices updated: " "$REP_W120"
 
 REP_W115=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
 assert_eq "width 115 unified line width 103" "103" "$(printf '%s\n' "$REP_W115" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^(╭|│|╰|Model |─|Gemini |GRAND |Date |[0-9]{2}-[0-9]{2} )' | awk '{print length($0)}' | sort -u)"
@@ -982,16 +1044,19 @@ assert_eq "ultra-wide 200 capped at 104" "104" "$(printf '%s\n' "$REP_W200" | se
 "$JB_DIR/report.sh" set theme compact >/dev/null
 REP_COMPACT_W120=$(JENBACH_WIDTH=120 "$JB_DIR/report.sh" all)
 assert_eq "compact wide 120 divider width 104" "104" "$(printf '%s\n' "$REP_COMPACT_W120" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^─+$' | awk '{print length($0)}' | sort -u)"
+assert_contains "compact untrimmed footer shows Prices updated" "Prices updated: " "$REP_COMPACT_W120"
 
 "$JB_DIR/report.sh" set theme plain >/dev/null
 REP_PLAIN_W120=$(JENBACH_WIDTH=120 "$JB_DIR/report.sh" all)
 assert_eq "plain wide 120 zero ESC" "0" "$(printf '%s' "$REP_PLAIN_W120" | grep -c $'\x1b' || true)"
 assert_eq "plain wide 120 pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_PLAIN_W120") || true)"
 assert_eq "plain wide 120 unified width 104" "104" "$(printf '%s\n' "$REP_PLAIN_W120" | grep -E '^(\+--|\||\+|Model |-|Gemini |GRAND |Date |[0-9]{2}-[0-9]{2} )' | awk '{print length($0)}' | sort -u)"
+assert_contains "plain untrimmed footer shows Prices updated" "Prices updated: " "$REP_PLAIN_W120"
 
 "$JB_DIR/report.sh" set theme modern >/dev/null
 REP_W80=$(JENBACH_WIDTH=80 "$JB_DIR/report.sh" all)
 assert_contains "narrow 80 falls back to short_model of base in RECENT SESSIONS" "4 Hydrogen" "$REP_W80"
+assert_contains "narrow 80 untrimmed footer shows Prices updated" "Prices updated: " "$REP_W80"
 W80_T2_LEN=$(printf '%s\n' "$REP_W80" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^Date ' | awk '{print length($0)}')
 assert_eq "narrow 80 table 2 stays at natural min_w (91)" "91" "$W80_T2_LEN"
 
@@ -1017,8 +1082,34 @@ rm -f "$JB_DIR/usage_logs/s_h3.json"
 "$JB_DIR/report.sh" set history off >/dev/null
 REP_NOHIST_W120=$(JENBACH_WIDTH=120 "$JB_DIR/report.sh" all)
 assert_not_contains "show_history off omits RECENT SESSIONS" "RECENT SESSIONS" "$REP_NOHIST_W120"
+assert_contains "show_history off still shows Prices updated" "Prices updated: " "$REP_NOHIST_W120"
 assert_eq "show_history off unified width 104" "104" "$(printf '%s\n' "$REP_NOHIST_W120" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^(╭|│|╰|Model |─|Gemini |GRAND )' | awk '{print length($0)}' | sort -u)"
 "$JB_DIR/report.sh" set history on >/dev/null
+
+# Malformed/missing/non-ASCII prices.json updated_at falls back to N/A
+PRICES_BAK=$(cat "$JB_DIR/prices.json")
+rm -f "$JB_DIR/prices.json"
+REP_P_MISS=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "missing prices.json renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_MISS"
+printf 'not-json\n' > "$JB_DIR/prices.json"
+REP_P_CORRUPT=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "corrupt prices.json renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_CORRUPT"
+printf '{"updated_at":123,"models":{"default":{"in":1,"cached":0,"out":2}}}\n' > "$JB_DIR/prices.json"
+REP_P_NUM=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "non-string updated_at renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_NUM"
+printf '[]\n' > "$JB_DIR/prices.json"
+REP_P_ARR=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "non-object prices.json renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_ARR"
+printf '{"updated_at":"2026-01-01\\n","models":{"default":{"in":1,"cached":0,"out":2}}}\n' > "$JB_DIR/prices.json"
+REP_P_NL=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "trailing-newline updated_at renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_NL"
+printf '{"updated_at":"2026-01-01ü","models":{"default":{"in":1,"cached":0,"out":2}}}\n' > "$JB_DIR/prices.json"
+"$JB_DIR/report.sh" set theme plain >/dev/null
+REP_P_NONASCII=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_contains "non-ASCII updated_at renders Prices updated: N/A" "Prices updated: N/A" "$REP_P_NONASCII"
+assert_eq "non-ASCII updated_at fallback keeps plain pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_P_NONASCII") || true)"
+"$JB_DIR/report.sh" set theme modern >/dev/null
+printf '%s\n' "$PRICES_BAK" > "$JB_DIR/prices.json"
 
 REP_BADW=$(JENBACH_WIDTH=abc "$JB_DIR/report.sh" all)
 assert_contains "invalid JENBACH_WIDTH falls back cleanly" "Gemini 4 Hydrogen" "$REP_BADW"
@@ -1517,7 +1608,7 @@ SYNC_TEST_DIR=$(mktemp -d)
   printf '%s %s\n' "$((NOW_EP + 60))" "1_0" > "$SYNC_TEST_DIR/.sub_s1m.ttl"
   rm -f "$SYNC_TEST_DIR/.sub_s1m.json"
   jenbach_maybe_sync_subagents "$SYNC_TEST_DIR" "s1m" "$HOME/.gemini/antigravity-cli" "$JB_DIR/prices.json" "$JB_DIR/lib" "1_0" "2026-11-22 12:00"
-  for _ in $(seq 1 30); do [ -f "$SYNC_TEST_DIR/.sub_s1m.json" ] && break; sleep 0.05; done
+  for _ in $(seq 1 30); do [ -f "$SYNC_TEST_DIR/.sub_s1m.json" ] && [ ! -d "$SYNC_TEST_DIR/.sub_s1m.lock" ] && break; sleep 0.05; done
   [ -f "$SYNC_TEST_DIR/.sub_s1m.json" ] || exit 1
 
   # Valid TTL + existing sidecar + changed SUB_SIG -> bypasses TTL and syncs
@@ -1601,6 +1692,8 @@ TINY_DIR=$(mktemp -d)
 HOME_BAK="$HOME"
 export HOME="$TINY_DIR"
 "$REPO_DIR/install.sh" >/dev/null
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$TINY_DIR/.gemini/antigravity-cli/jenbach/.prices_next_check"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$TINY_DIR/.gemini/antigravity-cli/jenbach/.app_update_next_check"
 cat << JSON > "$TINY_DIR/.gemini/antigravity-cli/jenbach/usage_logs/tiny_kpi.json"
 {"timestamp":"$TODAY_D 12:00","session_id":"tiny_kpi","model":"Flash","uncached_tokens":100,"cache_tokens":0,"output_tokens":10,"main_cost_usd":0.0002,"subagent_cost_usd":0.0052,"cost_usd":0.0054,"has_subagents":true,"subagent_records":[{"session_id":"s1","timestamp":"$TODAY_D 12:00","model":"Flash","uncached_tokens":100,"cache_tokens":0,"output_tokens":10,"cost_usd":0.0002}]}
 JSON
@@ -1640,6 +1733,8 @@ PROMPT_DIR=$(mktemp -d)
 HOME_BAK="$HOME"
 export HOME="$PROMPT_DIR"
 "$REPO_DIR/install.sh" >/dev/null
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$PROMPT_DIR/.gemini/antigravity-cli/jenbach/.prices_next_check"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$PROMPT_DIR/.gemini/antigravity-cli/jenbach/.app_update_next_check"
 P_BRAIN="$PROMPT_DIR/.gemini/antigravity-cli/brain"
 P_LOGS="$PROMPT_DIR/.gemini/antigravity-cli/jenbach/usage_logs"
 mkdir -p "$P_BRAIN/p_sess_01/.system_generated/logs"
@@ -1814,6 +1909,8 @@ FIT_DIR=$(mktemp -d)
 export HOME="$FIT_DIR"
 bash "$REPO_DIR/install.sh" >/dev/null
 F_JB="$FIT_DIR/.gemini/antigravity-cli/jenbach"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$F_JB/.prices_next_check"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$F_JB/.app_update_next_check"
 F_LOGS="$F_JB/usage_logs"
 F_BRAIN="$FIT_DIR/.gemini/antigravity-cli/brain"
 mkdir -p "$F_LOGS" "$F_BRAIN"
@@ -1927,6 +2024,9 @@ assert_contains "JENBACH_HEIGHT=28 includes fit_01 both children" "sub_f1b" "$RE
 assert_not_contains "JENBACH_HEIGHT=28 atomically excludes fit_02" "fit_02_b" "$REP_FIT28"
 assert_not_contains "JENBACH_HEIGHT=28 excludes fit_02 children" "sub_f2a" "$REP_FIT28"
 assert_contains "JENBACH_HEIGHT=28 emits fit-to-terminal footer" "Showing 1 of 15 sessions (fit to terminal). Run 'jenbach -n 15' to view all." "$REP_FIT28"
+assert_contains "JENBACH_HEIGHT=28 W115 appends Prices suffix" " · Prices: " "$REP_FIT28"
+MAX_RAW_FIT28=$(printf '%s\n' "$REP_FIT28" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+assert_eq "JENBACH_HEIGHT=28 W115 raw line length <= 160" "true" "$([ "$MAX_RAW_FIT28" -le 160 ] && echo true || echo false)"
 FIT28_LINES=$(printf '%s\n' "$REP_FIT28" | wc -l | tr -d ' ')
 if [ "$FIT28_LINES" -le 20 ]; then
   PASS=$((PASS + 1))
@@ -1934,6 +2034,18 @@ else
   echo "FAIL: JENBACH_HEIGHT=28 output lines $FIT28_LINES > 20" >&2
   FAIL=$((FAIL + 1))
 fi
+
+# Width boundary for trimmed footer Prices suffix: 99 omits, 100 includes, plain uses |
+REP_FIT_W99=$(JENBACH_WIDTH=99 JENBACH_HEIGHT=28 "$F_JB/report.sh" all)
+assert_not_contains "JENBACH_WIDTH=99 trimmed footer omits Prices suffix" "Prices:" "$REP_FIT_W99"
+REP_FIT_W100=$(JENBACH_WIDTH=100 JENBACH_HEIGHT=28 "$F_JB/report.sh" all)
+assert_contains "JENBACH_WIDTH=100 trimmed footer includes Prices suffix" " · Prices: " "$REP_FIT_W100"
+"$F_JB/report.sh" set theme plain >/dev/null
+REP_FIT_PLAIN=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" all)
+assert_contains "plain trimmed footer uses | Prices:" " | Prices: " "$REP_FIT_PLAIN"
+assert_eq "plain trimmed footer zero ESC" "0" "$(printf '%s' "$REP_FIT_PLAIN" | grep -c $'\x1b' || true)"
+assert_eq "plain trimmed footer pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_FIT_PLAIN") || true)"
+"$F_JB/report.sh" set theme modern >/dev/null
 
 # Tiny terminal height JENBACH_HEIGHT=15 still shows at least 1 parent + all its subagents
 REP_FIT15=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=15 "$F_JB/report.sh" all)
@@ -1946,6 +2058,7 @@ assert_contains "-n 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)"
 assert_contains "-n 5 includes fit_05" "fit_05_c" "$REP_N5"
 assert_not_contains "-n 5 excludes fit_06" "fit_06_c" "$REP_N5"
 assert_contains "-n 5 emits non-fit footer" "Showing 5 of 15 sessions. Run 'jenbach -n 15' to view all." "$REP_N5"
+assert_contains "-n 5 W115 appends Prices suffix" " · Prices: " "$REP_N5"
 assert_not_contains "-n 5 omits (fit to terminal)" "(fit to terminal)" "$REP_N5"
 
 # --limit 20 shows all 15 without footer
@@ -1988,6 +2101,7 @@ assert_contains "compact theme auto-fit shows SHOWING 1 OF 15" "RECENT SESSIONS 
 "$F_JB/report.sh" set limit 5 >/dev/null
 REP_LIM_TRUNC=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=100 "$F_JB/report.sh" all)
 assert_contains "history_limit=5 at height 100 emits non-fit footer" "Showing 5 of 15 sessions. Run 'jenbach -n 15' to view all." "$REP_LIM_TRUNC"
+assert_contains "history_limit=5 at height 100 W115 appends Prices suffix" " · Prices: " "$REP_LIM_TRUNC"
 assert_not_contains "history_limit=5 at height 100 omits (fit to terminal)" "(fit to terminal)" "$REP_LIM_TRUNC"
 "$F_JB/report.sh" set limit 20 >/dev/null
 
@@ -1999,10 +2113,11 @@ assert_contains "LINES=28 COLUMNS=115 fallback works" "RECENT SESSIONS (SHOWING 
 REP_NONNUM=$(JENBACH_WIDTH=abc JENBACH_HEIGHT=abc "$F_JB/report.sh" all)
 assert_contains "non-numeric JENBACH_HEIGHT/WIDTH does not crash" "RECENT SESSIONS" "$REP_NONNUM"
 
-# set auto-fit off / on / bogus & config output [13] / [14]
+# set auto-fit off / on / bogus & config output [13] / [14] / [15]
 CFG_MENU_OUT=$("$F_JB/report.sh" set auto-fit off)
 assert_contains "set auto-fit off updates [13]" "[13] Auto-Fit Terminal Height" "$CFG_MENU_OUT"
-assert_contains "config menu shifts Reset to [14]" "[14] Reset / Clear All Session Logs" "$CFG_MENU_OUT"
+assert_contains "config menu shows [14] Check App Updates" "[14] Check App Updates" "$CFG_MENU_OUT"
+assert_contains "config menu shifts Reset to [15]" "[15] Reset / Clear All Session Logs" "$CFG_MENU_OUT"
 REP_NOFIT=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" all)
 assert_contains "auto-fit off shows all 15 even at JENBACH_HEIGHT=28" "fit_15_c" "$REP_NOFIT"
 "$F_JB/report.sh" set auto-fit on >/dev/null
@@ -2032,11 +2147,19 @@ else
   PASS=$((PASS + 1))
 fi
 touch "$JB_DIR/.quota_cycles.tmp.999" "$JB_DIR/usage_logs/.sub_u1.json" "$JB_DIR/usage_logs/.sub_u1.ttl"
-mkdir -p "$JB_DIR/usage_logs/.sub_u1.lock" "$JB_DIR/lib/__pycache__"
+touch "$JB_DIR/.latest_version" "$JB_DIR/.latest_version.tmp.999" "$JB_DIR/.app_update_next_check" "$JB_DIR/.app_update_next_check.tmp.999" "$JB_DIR/.app_update.hdr.999"
+mkdir -p "$JB_DIR/usage_logs/.sub_u1.lock" "$JB_DIR/.app_update.lock" "$JB_DIR/lib/__pycache__"
 touch "$JB_DIR/lib/__pycache__/subagent_sync.cpython-314.pyc"
 bash "$REPO_DIR/uninstall.sh" >/dev/null
 assert_eq "uninstall removes lib/common.jq" "false" "$([ -f "$JB_DIR/lib/common.jq" ] && echo true || echo false)"
 assert_eq "uninstall removes lib/auto_update.sh" "false" "$([ -f "$JB_DIR/lib/auto_update.sh" ] && echo true || echo false)"
+assert_eq "uninstall removes lib/app_update.sh" "false" "$([ -f "$JB_DIR/lib/app_update.sh" ] && echo true || echo false)"
+assert_eq "uninstall removes .latest_version" "false" "$([ -f "$JB_DIR/.latest_version" ] && echo true || echo false)"
+assert_eq "uninstall removes .latest_version.tmp.*" "false" "$([ -f "$JB_DIR/.latest_version.tmp.999" ] && echo true || echo false)"
+assert_eq "uninstall removes .app_update_next_check" "false" "$([ -f "$JB_DIR/.app_update_next_check" ] && echo true || echo false)"
+assert_eq "uninstall removes .app_update_next_check.tmp.*" "false" "$([ -f "$JB_DIR/.app_update_next_check.tmp.999" ] && echo true || echo false)"
+assert_eq "uninstall removes .app_update.hdr.*" "false" "$([ -f "$JB_DIR/.app_update.hdr.999" ] && echo true || echo false)"
+assert_eq "uninstall removes .app_update.lock" "false" "$([ -d "$JB_DIR/.app_update.lock" ] && echo true || echo false)"
 assert_eq "uninstall removes lib/subagent_sync.py" "false" "$([ -f "$JB_DIR/lib/subagent_sync.py" ] && echo true || echo false)"
 assert_eq "uninstall removes lib/__pycache__" "false" "$([ -d "$JB_DIR/lib/__pycache__" ] && echo true || echo false)"
 assert_eq "uninstall removes lib directory" "false" "$([ -d "$JB_DIR/lib" ] && echo true || echo false)"
@@ -2094,6 +2217,434 @@ JENBACH_USR_LOCAL_BIN="$SYS_TMP/missing_bin" JENBACH_BREW_BIN="$SYS_BREW_BIN" ba
 assert_eq "uninstall skips readonly brew bin symlink safely" "true" "$([ -L "$SYS_BREW_BIN/jenbach" ] && echo true || echo false)"
 chmod 755 "$SYS_BREW_BIN"
 rm -rf "$SYS_TMP"
+
+# 15. Offline app_update.sh and jenbach update tests
+APP_UPD_DIR=$(mktemp -d)
+HOME_BAK="$HOME"
+PATH_BAK="$PATH"
+export HOME="$APP_UPD_DIR"
+APP_MOCK_BIN="$APP_UPD_DIR/mock_bin"
+APP_MOCK_STATE="$APP_UPD_DIR/mock_state"
+mkdir -p "$APP_MOCK_BIN" "$APP_MOCK_STATE" "$APP_UPD_DIR/sys_local_bin" "$APP_UPD_DIR/sys_brew_bin"
+export JENBACH_USR_LOCAL_BIN="$APP_UPD_DIR/sys_local_bin"
+export JENBACH_BREW_BIN="$APP_UPD_DIR/sys_brew_bin"
+export JENBACH_APP_MOCK_STATE="$APP_MOCK_STATE"
+
+cat << 'SH' > "$APP_MOCK_BIN/curl"
+#!/usr/bin/env bash
+set -euo pipefail
+STATE_DIR="${JENBACH_APP_MOCK_STATE:?}"
+echo "$@" >> "$STATE_DIR/calls.log"
+MODE=$(cat "$STATE_DIR/mode" 2>/dev/null || echo "302_v2")
+DELAY=$(cat "$STATE_DIR/delay" 2>/dev/null || echo "0")
+if [ "$DELAY" != "0" ]; then
+  sleep "$DELAY"
+fi
+
+HDR_FILE=""
+OUT_FILE=""
+WRITE_FMT=""
+URL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -D) HDR_FILE="$2"; shift 2 ;;
+    -o) OUT_FILE="$2"; shift 2 ;;
+    -w) WRITE_FMT="$2"; shift 2 ;;
+    -H|-m|--max-time) shift 2 ;;
+    -*) shift ;;
+    *) URL="$1"; shift ;;
+  esac
+done
+
+if [[ "$URL" == *".tar.gz" ]]; then
+  if [ "$MODE" = "tarball_fail" ]; then
+    exit 22
+  fi
+  [ -n "$OUT_FILE" ] && cp "$STATE_DIR/release.tar.gz" "$OUT_FILE"
+  exit 0
+fi
+
+case "$MODE" in
+  302_v2|tarball_fail)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 302 Found\r\nLocation: https://github.com/utariddev/jenbach/releases/tag/v2\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '302'
+    exit 0
+    ;;
+  302_rel_query)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 302 Found\r\nlocation: /utariddev/jenbach/releases/tag/2?foo=1\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '302'
+    exit 0
+    ;;
+  302_no_releases)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 302 Found\r\nLocation: https://github.com/utariddev/jenbach/releases\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '302'
+    exit 0
+    ;;
+  404)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 404 Not Found\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '404'
+    exit 0
+    ;;
+  500)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 500 Internal Server Error\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '500'
+    exit 0
+    ;;
+  000)
+    [ -n "$HDR_FILE" ] && : > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '000'
+    exit 7
+    ;;
+  *)
+    [ -n "$HDR_FILE" ] && printf 'HTTP/1.1 404 Not Found\r\n\r\n' > "$HDR_FILE"
+    [ "$WRITE_FMT" = "%{http_code}" ] && printf '404'
+    exit 0
+    ;;
+esac
+SH
+chmod +x "$APP_MOCK_BIN/curl"
+export PATH="$APP_MOCK_BIN:$PATH"
+
+"$REPO_DIR/install.sh" >/dev/null
+A_JB="$APP_UPD_DIR/.gemini/antigravity-cli/jenbach"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$A_JB/.prices_next_check"
+printf '1\n' > "$A_JB/VERSION"
+
+wait_app_bg_done() {
+  local i=0
+  while [ -d "$A_JB/.app_update.lock" ] && [ "$i" -lt 60 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+}
+
+# 15a. Background check HTTP 302 -> v2 writes .latest_version and promotes TTL to ~24h
+printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+rm -f "$A_JB/.latest_version" "$A_JB/.app_update_next_check"
+NOW_BEFORE=$(date +%s)
+"$A_JB/report.sh" -v >/dev/null
+"$A_JB/report.sh" info >/dev/null
+wait_app_bg_done
+assert_eq "bg 302 v2 writes .latest_version=2" "2" "$(cat "$A_JB/.latest_version" 2>/dev/null || echo "")"
+TTL_302=$(cat "$A_JB/.app_update_next_check" 2>/dev/null || echo 0)
+assert_eq "bg 302 v2 promotes TTL to ~24h" "true" "$([ "$TTL_302" -ge $((NOW_BEFORE + 86340)) ] && [ "$TTL_302" -le $((NOW_BEFORE + 86460)) ] && echo true || echo false)"
+
+# 15b. Background check HTTP 302 relative URL with query -> writes .latest_version=2
+rm -f "$A_JB/.latest_version" "$A_JB/.app_update_next_check"
+printf '302_rel_query\n' > "$APP_MOCK_STATE/mode"
+"$A_JB/report.sh" info >/dev/null
+wait_app_bg_done
+assert_eq "bg 302 relative/query writes .latest_version=2" "2" "$(cat "$A_JB/.latest_version" 2>/dev/null || echo "")"
+
+# 15c. Background check HTTP 302 to /releases (0 releases) & HTTP 404 -> no .latest_version, promotes TTL to ~24h
+rm -f "$A_JB/.latest_version" "$A_JB/.app_update_next_check"
+printf '302_no_releases\n' > "$APP_MOCK_STATE/mode"
+NOW_BEFORE=$(date +%s)
+"$A_JB/report.sh" info >/dev/null
+wait_app_bg_done
+assert_eq "bg 302 /releases does not write .latest_version" "false" "$([ -f "$A_JB/.latest_version" ] && echo true || echo false)"
+TTL_NOREL=$(cat "$A_JB/.app_update_next_check" 2>/dev/null || echo 0)
+assert_eq "bg 302 /releases promotes TTL to ~24h" "true" "$([ "$TTL_NOREL" -ge $((NOW_BEFORE + 86340)) ] && echo true || echo false)"
+
+rm -f "$A_JB/.app_update_next_check"
+printf '404\n' > "$APP_MOCK_STATE/mode"
+NOW_BEFORE=$(date +%s)
+"$A_JB/report.sh" info >/dev/null
+wait_app_bg_done
+assert_eq "bg 404 does not write .latest_version" "false" "$([ -f "$A_JB/.latest_version" ] && echo true || echo false)"
+TTL_404=$(cat "$A_JB/.app_update_next_check" 2>/dev/null || echo 0)
+assert_eq "bg 404 promotes TTL to ~24h" "true" "$([ "$TTL_404" -ge $((NOW_BEFORE + 86340)) ] && echo true || echo false)"
+
+# 15d. Background check HTTP 000 and HTTP 500 -> keeps 15m backoff [now+840, now+960]
+for fail_mode in 000 500; do
+  rm -f "$A_JB/.app_update_next_check"
+  printf '%s\n' "$fail_mode" > "$APP_MOCK_STATE/mode"
+  NOW_BEFORE=$(date +%s)
+  "$A_JB/report.sh" info >/dev/null
+  wait_app_bg_done
+  TTL_FAIL=$(cat "$A_JB/.app_update_next_check" 2>/dev/null || echo 0)
+  assert_eq "bg $fail_mode keeps 15m backoff" "true" "$([ "$TTL_FAIL" -ge $((NOW_BEFORE + 840)) ] && [ "$TTL_FAIL" -le $((NOW_BEFORE + 960)) ] && echo true || echo false)"
+done
+
+# 15e. Compare-and-promote unit test (_jenbach_promote_app_ttl)
+(
+  . "$A_JB/lib/app_update.sh"
+  PROM_STAMP="$APP_UPD_DIR/prom_stamp"
+  PROM_TMP="$APP_UPD_DIR/prom_tmp"
+  # Deleted mid-flight -> stays deleted
+  rm -f "$PROM_STAMP"
+  _jenbach_promote_app_ttl "$PROM_STAMP" "12345" "$PROM_TMP"
+  assert_eq "promote_app_ttl skips deleted stamp" "false" "$([ -f "$PROM_STAMP" ] && echo true || echo false)"
+  # Modified mid-flight -> preserves newer value
+  printf '99999\n' > "$PROM_STAMP"
+  _jenbach_promote_app_ttl "$PROM_STAMP" "12345" "$PROM_TMP"
+  assert_eq "promote_app_ttl preserves modified stamp" "99999" "$(cat "$PROM_STAMP")"
+  # Matching -> promotes to ~24h
+  printf '12345\n' > "$PROM_STAMP"
+  _jenbach_promote_app_ttl "$PROM_STAMP" "12345" "$PROM_TMP"
+  assert_eq "promote_app_ttl promotes matching stamp" "true" "$([ "$(cat "$PROM_STAMP")" -gt 86400 ] && echo true || echo false)"
+)
+
+# 15f. Active lock & stale lock (>120s with and without ts) recovery
+(
+  . "$A_JB/lib/app_update.sh"
+  printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+  rm -f "$A_JB/.app_update_next_check" "$A_JB/.latest_version"
+  mkdir -p "$A_JB/.app_update.lock"
+  printf '%s\n' "$(date +%s)" > "$A_JB/.app_update.lock/ts"
+  CALLS_BEFORE=$(wc -l < "$APP_MOCK_STATE/calls.log" 2>/dev/null || echo 0)
+  jenbach_maybe_check_app_update "$A_JB" "$A_JB/report_config.json"
+  CALLS_AFTER=$(wc -l < "$APP_MOCK_STATE/calls.log" 2>/dev/null || echo 0)
+  assert_eq "active app_update lock skips curl" "$CALLS_BEFORE" "$CALLS_AFTER"
+
+  # Stale lock with old ts (>120s)
+  printf '%s\n' "$(( $(date +%s) - 200 ))" > "$A_JB/.app_update.lock/ts"
+  jenbach_maybe_check_app_update "$A_JB" "$A_JB/report_config.json"
+  wait_app_bg_done
+  assert_eq "stale lock with ts recovers and updates .latest_version" "2" "$(cat "$A_JB/.latest_version" 2>/dev/null || echo "")"
+
+  # Stale lock without ts (old mtime >120s)
+  rm -f "$A_JB/.app_update_next_check" "$A_JB/.latest_version"
+  mkdir -p "$A_JB/.app_update.lock"
+  touch -d "2020-01-01 00:00:00" "$A_JB/.app_update.lock"
+  jenbach_maybe_check_app_update "$A_JB" "$A_JB/report_config.json"
+  wait_app_bg_done
+  assert_eq "stale lock without ts recovers and updates .latest_version" "2" "$(cat "$A_JB/.latest_version" 2>/dev/null || echo "")"
+)
+
+# 15g. Passive update banner tests in report.sh, jenbach info, and never in statusline.sh
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$A_JB/.app_update_next_check"
+printf '2\n' > "$A_JB/.latest_version"
+printf '1\n' > "$A_JB/VERSION"
+mkdir -p "$A_JB/usage_logs"
+TODAY_U=$(date +"%Y-%m-%d")
+for ui in 01 02 03 04 05 06 07 08 09 10; do
+  cat << JSON > "$A_JB/usage_logs/u_${ui}.json"
+{"timestamp":"$TODAY_U 10:${ui}","session_id":"u_${ui}","model":"Gemini 3 Flash","uncached_tokens":100,"cache_tokens":50,"output_tokens":20,"main_cost_usd":0.01,"subagent_cost_usd":0,"cost_usd":0.01,"has_subagents":false,"subagent_records":[],"user_prompts":1}
+JSON
+done
+
+# statusline.sh never renders update banner
+SL_UPD_OUT=$(printf '%s' '{"session_id":"u_sl","model":{"display_name":"Flash"},"context_window":{"total_input_tokens":100,"total_output_tokens":10,"used_percentage":1},"cost":{"total_usd":0.01},"terminal_width":120}' | "$A_JB/statusline.sh")
+assert_not_contains "statusline never shows update banner" "Update available" "$SL_UPD_OUT"
+rm -f "$A_JB/usage_logs/u_sl.json"
+
+# info shows Update line
+INFO_UPD=$(NO_COLOR=1 "$A_JB/report.sh" info)
+assert_contains "jenbach info shows Update line" "Update     : v1 → v2 (run 'jenbach update')" "$INFO_UPD"
+
+# modern, compact, plain themes in report.sh
+REP_UPD_MOD=$(NO_COLOR=1 JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_contains "modern report shows update banner" "Update available: v1 → v2 — run 'jenbach update'" "$REP_UPD_MOD"
+
+"$A_JB/report.sh" set theme compact >/dev/null
+REP_UPD_COMP=$(NO_COLOR=1 JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_contains "compact report shows update banner" "Update available: v1 → v2 — run 'jenbach update'" "$REP_UPD_COMP"
+
+"$A_JB/report.sh" set theme plain >/dev/null
+REP_UPD_PLAIN=$(JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_contains "plain report shows ASCII update banner" "Update available: v1 -> v2 - run 'jenbach update'" "$REP_UPD_PLAIN"
+assert_eq "plain report with banner zero ESC" "0" "$(printf '%s' "$REP_UPD_PLAIN" | grep -c $'\x1b' || true)"
+assert_eq "plain report with banner pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_UPD_PLAIN") || true)"
+INFO_UPD_PLAIN=$("$A_JB/report.sh" info)
+assert_contains "plain info shows ASCII Update line" "Update     : v1 -> v2 (run 'jenbach update')" "$INFO_UPD_PLAIN"
+"$A_JB/report.sh" set theme modern >/dev/null
+
+# JENBACH_HEIGHT=28 stays <= 20 lines and JENBACH_WIDTH=115 stays <= 160 chars
+REP_UPD_FIT=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$A_JB/report.sh" all)
+assert_contains "auto-fit report still shows update banner" "Update available: v1 → v2" "$REP_UPD_FIT"
+FIT_LINE_CNT=$(printf '%s\n' "$REP_UPD_FIT" | wc -l)
+assert_eq "JENBACH_HEIGHT=28 with banner stays <= 20 lines" "true" "$([ "$FIT_LINE_CNT" -le 20 ] && echo true || echo false)"
+MAX_RAW_LEN=$(printf '%s\n' "$REP_UPD_FIT" | awk '{ if (length($0) > m) m = length($0) } END { print m+0 }')
+assert_eq "JENBACH_WIDTH=115 with banner raw len <= 160" "true" "$([ "$MAX_RAW_LEN" -le 160 ] && echo true || echo false)"
+
+# set check-updates off hides banner immediately and skips background curl; set check-updates on clears .app_update_next_check
+"$A_JB/report.sh" set check-updates off >/dev/null
+REP_UPD_OFF=$(NO_COLOR=1 JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_not_contains "check-updates off hides report banner" "Update available" "$REP_UPD_OFF"
+INFO_UPD_OFF=$(NO_COLOR=1 "$A_JB/report.sh" info)
+assert_not_contains "check-updates off hides info Update line" "Update     :" "$INFO_UPD_OFF"
+rm -f "$A_JB/.app_update_next_check"
+CALLS_BEFORE=$(wc -l < "$APP_MOCK_STATE/calls.log" 2>/dev/null || echo 0)
+"$A_JB/report.sh" all >/dev/null
+CALLS_AFTER=$(wc -l < "$APP_MOCK_STATE/calls.log" 2>/dev/null || echo 0)
+assert_eq "check-updates off skips background curl" "$CALLS_BEFORE" "$CALLS_AFTER"
+
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$A_JB/.app_update_next_check"
+"$A_JB/report.sh" set check-updates on >/dev/null
+assert_eq "set check-updates on clears .app_update_next_check" "false" "$([ -f "$A_JB/.app_update_next_check" ] && echo true || echo false)"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$A_JB/.app_update_next_check"
+
+# Stale .latest_version (<= local VERSION) shows no banner
+printf '2\n' > "$A_JB/VERSION"
+printf '2\n' > "$A_JB/.latest_version"
+REP_UPD_EQ=$(NO_COLOR=1 JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_not_contains "latest == local shows no banner" "Update available" "$REP_UPD_EQ"
+printf '1\n' > "$A_JB/.latest_version"
+REP_UPD_OLD=$(NO_COLOR=1 JENBACH_WIDTH=115 "$A_JB/report.sh" all)
+assert_not_contains "latest < local shows no banner" "Update available" "$REP_UPD_OLD"
+
+# 15h. End-to-end jenbach update & jenbach update --force with synthetic v2 tarball
+printf '1\n' > "$A_JB/VERSION"
+rm -f "$A_JB/.latest_version"
+"$A_JB/report.sh" set theme compact >/dev/null
+
+# Build synthetic v2 release tarball
+SYN_ROOT="$APP_UPD_DIR/syn_src"
+mkdir -p "$SYN_ROOT/jenbach-v2"
+cp -R "$REPO_DIR/lib" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh" "$REPO_DIR/statusline.sh" "$REPO_DIR/report.sh" "$REPO_DIR/prices.json" "$SYN_ROOT/jenbach-v2/"
+printf '2\n' > "$SYN_ROOT/jenbach-v2/VERSION"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$SYN_ROOT" "jenbach-v2"
+
+printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+UPD_OUT=$("$A_JB/report.sh" update)
+assert_contains "jenbach update prints upgrade message" "Jenbach updated: v1 -> v2" "$UPD_OUT"
+assert_eq "jenbach update upgrades VERSION to 2" "2" "$(cat "$A_JB/VERSION")"
+assert_eq "jenbach update sets .latest_version to 2" "2" "$(cat "$A_JB/.latest_version")"
+assert_eq "jenbach update preserves usage_logs" "true" "$([ -f "$A_JB/usage_logs/u_01.json" ] && echo true || echo false)"
+assert_eq "jenbach update preserves user theme=compact" "compact" "$(jq -r '.theme' "$A_JB/report_config.json")"
+
+# Subsequent jenbach update prints already up to date without downloading tarball
+printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+: > "$APP_MOCK_STATE/calls.log"
+UPD_AGAIN=$("$A_JB/report.sh" update)
+assert_eq "subsequent jenbach update prints already up to date" "Jenbach is already up to date (v2)." "$UPD_AGAIN"
+assert_not_contains "already up to date skips tarball download" ".tar.gz" "$(cat "$APP_MOCK_STATE/calls.log")"
+
+# jenbach update --force reinstalls
+: > "$APP_MOCK_STATE/calls.log"
+UPD_FORCE=$("$A_JB/report.sh" update --force)
+assert_contains "jenbach update --force reinstalls" "Jenbach updated: v2 -> v2" "$UPD_FORCE"
+assert_contains "jenbach update --force downloads tarball" ".tar.gz" "$(cat "$APP_MOCK_STATE/calls.log")"
+
+# 15i. Error handling for jenbach update
+if "$A_JB/report.sh" update --bogus 2>/dev/null; then
+  echo "FAIL: jenbach update --bogus should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+
+for bad_mode in 302_no_releases 500; do
+  printf '%s\n' "$bad_mode" > "$APP_MOCK_STATE/mode"
+  if "$A_JB/report.sh" update 2>/dev/null; then
+    echo "FAIL: jenbach update ($bad_mode) should exit 1" >&2
+    FAIL=$((FAIL + 1))
+  else
+    PASS=$((PASS + 1))
+  fi
+done
+
+printf '1\n' > "$A_JB/VERSION"
+printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+
+# Corrupted tarball
+printf 'not a gzip\n' > "$APP_MOCK_STATE/release.tar.gz"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: corrupted tarball should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "corrupted tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+# Missing required file in tarball
+BAD_MISS="$APP_UPD_DIR/bad_miss"
+mkdir -p "$BAD_MISS/jenbach-v2"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_MISS/jenbach-v2/"
+rm -f "$BAD_MISS/jenbach-v2/lib/app_update.sh"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_MISS" "jenbach-v2"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: missing required file in tarball should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "missing file tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+# Invalid bash -n syntax in tarball
+BAD_SYN="$APP_UPD_DIR/bad_syn"
+mkdir -p "$BAD_SYN/jenbach-v2"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_SYN/jenbach-v2/"
+printf 'if [ 1; then\n' > "$BAD_SYN/jenbach-v2/report.sh"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_SYN" "jenbach-v2"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: invalid bash syntax in tarball should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "invalid syntax tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+# Invalid prices.json in tarball
+BAD_JSON="$APP_UPD_DIR/bad_json"
+mkdir -p "$BAD_JSON/jenbach-v2"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_JSON/jenbach-v2/"
+printf '{bad json' > "$BAD_JSON/jenbach-v2/prices.json"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_JSON" "jenbach-v2"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: invalid prices.json in tarball should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "invalid prices.json tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+# Tarball download failure
+printf 'tarball_fail\n' > "$APP_MOCK_STATE/mode"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: tarball download failure should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "tarball download failure leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+printf '302_v2\n' > "$APP_MOCK_STATE/mode"
+
+# Invalid archive root (0 and >1 install.sh roots)
+BAD_NOROOT="$APP_UPD_DIR/bad_noroot"
+mkdir -p "$BAD_NOROOT/empty_dir"
+printf 'hi\n' > "$BAD_NOROOT/empty_dir/README.md"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_NOROOT" "empty_dir"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: archive with 0 install.sh roots should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "0-root tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+BAD_TWO="$APP_UPD_DIR/bad_two"
+mkdir -p "$BAD_TWO/dir1" "$BAD_TWO/dir2"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_TWO/dir1/"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_TWO/dir2/"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_TWO" "dir1" "dir2"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: archive with >1 install.sh roots should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "multi-root tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+# Failing install.sh inside valid tarball
+BAD_INST="$APP_UPD_DIR/bad_inst"
+mkdir -p "$BAD_INST/jenbach-v2"
+cp -R "$SYN_ROOT/jenbach-v2/"* "$BAD_INST/jenbach-v2/"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BAD_INST/jenbach-v2/install.sh"
+tar -czf "$APP_MOCK_STATE/release.tar.gz" -C "$BAD_INST" "jenbach-v2"
+if "$A_JB/report.sh" update 2>/dev/null; then
+  echo "FAIL: failing install.sh in tarball should exit 1" >&2
+  FAIL=$((FAIL + 1))
+else
+  PASS=$((PASS + 1))
+fi
+assert_eq "failing install.sh tarball leaves VERSION=1" "1" "$(cat "$A_JB/VERSION")"
+
+unset JENBACH_USR_LOCAL_BIN JENBACH_BREW_BIN JENBACH_APP_MOCK_STATE
+export HOME="$HOME_BAK"
+export PATH="$PATH_BAK"
+rm -rf "$APP_UPD_DIR"
 
 echo "Tests finished: $PASS passed, $FAIL failed."
 [ "$FAIL" -eq 0 ]
