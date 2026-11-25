@@ -175,14 +175,14 @@ OUTPUT=$(printf '%s' "$INPUT" | jq -L "$LIB_DIR" -r --arg now "$NOW" --arg sid "
 
   (if $plain then
     (if $tw >= 105 then
-      "\($model) | In: \(fmt_tok($ci; $short)) (\($cpct)%) Out: \(fmt_tok($co; $short)) | Ctx [\(progress_bar($ctx_pct; 6; true))] \($ctx_pct)% | \($cost_disp_plain) | Wk [\(if $wf != null then progress_bar(($wf * 100); 6; true) else "------" end)] \($wrem)"
+      "\($model) | In: \(fmt_tok($ci; $short)) (\($cpct)% cache) Out: \(fmt_tok($co; $short)) | Ctx [\(progress_bar($ctx_pct; 6; true))] \($ctx_pct)% | \($cost_disp_plain) | Wk [\(if $wf != null then progress_bar(($wf * 100); 6; true) else "------" end)] \($wrem)"
      elif $tw >= 75 then
       "\(short_model($model; true)) | In: \(fmt_tok($ci; $short)) (\($cpct)%) Out: \(fmt_tok($co; $short)) | Ctx: \($ctx_pct)% | \($cost_disp_plain) | Wk: \($wrem)"
      else
       "\(short_model($model; true)) | Ctx \($ctx_pct)% | \($cost_disp_plain) | Wk \($wrem)"
      end)
    elif ($theme == "modern" and $tw >= 105) then
-    "\(paint("◆ \($model)"; "bold_cyan"; $use_color)) \($sep) ↓\(fmt_tok($ci; $short)) \(paint("(\($cpct)%)"; $cache_c; $use_color)) ↑\(fmt_tok($co; $short)) \($sep) Ctx \(paint(progress_bar($ctx_pct; 6; false); $ctx_c; $use_color)) \(paint("\($ctx_pct)%"; $ctx_c; $use_color)) \($sep) \($cost_disp_color) \($sep) Wk \(paint((if $wf != null then progress_bar(($wf * 100); 6; false) else "░░░░░░" end); $wk_c; $use_color)) \(paint($wrem; $wk_c; $use_color))"
+    "\(paint("◆ \($model)"; "bold_cyan"; $use_color)) \($sep) ↓\(fmt_tok($ci; $short)) \(paint("(\($cpct)% cache)"; $cache_c; $use_color)) ↑\(fmt_tok($co; $short)) \($sep) Ctx \(paint(progress_bar($ctx_pct; 6; false); $ctx_c; $use_color)) \(paint("\($ctx_pct)%"; $ctx_c; $use_color)) \($sep) \($cost_disp_color) \($sep) Wk \(paint((if $wf != null then progress_bar(($wf * 100); 6; false) else "░░░░░░" end); $wk_c; $use_color)) \(paint($wrem; $wk_c; $use_color))"
    elif ($tw >= 75) then
     "\(paint("◆ \(short_model($model; false))"; "bold_cyan"; $use_color)) \($sep) ↓\(fmt_tok($ci; $short)) \(paint("(\($cpct)%)"; $cache_c; $use_color)) ↑\(fmt_tok($co; $short)) \($sep) Ctx \(paint("\($ctx_pct)%"; $ctx_c; $use_color)) \($sep) \($cost_disp_color) \($sep) Wk \(paint($wrem; $wk_c; $use_color))"
    else

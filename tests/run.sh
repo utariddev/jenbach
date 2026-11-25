@@ -147,27 +147,72 @@ PAYLOAD_BASE='{"session_id":"s1","model":{"display_name":"Gemini 3.8 Flash"},"co
 OUT_WIDE=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 120}' | "$JB_DIR/statusline.sh")
 assert_contains "wide has bar" "▓" "$OUT_WIDE"
 assert_contains "wide has sub" "(Sub: \$0.010)" "$OUT_WIDE"
+assert_contains "modern wide has % cache" $'\x1b[1;32m(80% cache)\x1b[0m' "$OUT_WIDE"
+
+OUT_DEF_W=$(printf '%s' "$PAYLOAD_BASE" | "$JB_DIR/statusline.sh")
+assert_contains "modern omitted terminal_width defaults to wide % cache" $'\x1b[1;32m(80% cache)\x1b[0m' "$OUT_DEF_W"
+
+OUT_MOD_105=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 105}' | "$JB_DIR/statusline.sh")
+assert_contains "modern width 105 has % cache" "(80% cache)" "$OUT_MOD_105"
+
+OUT_MOD_104=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 104}' | "$JB_DIR/statusline.sh")
+assert_contains "modern width 104 keeps compact cache pct" "(80%)" "$OUT_MOD_104"
+assert_not_contains "modern width 104 omits % cache" "% cache" "$OUT_MOD_104"
 
 OUT_MED=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 90}' | "$JB_DIR/statusline.sh")
 assert_not_contains "medium has no bar" "▓" "$OUT_MED"
 assert_contains "medium has down arrow" "↓" "$OUT_MED"
+assert_contains "modern medium keeps compact cache pct" "(80%)" "$OUT_MED"
+assert_not_contains "modern medium omits % cache" "% cache" "$OUT_MED"
 
 OUT_NAR=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 60}' | "$JB_DIR/statusline.sh")
 assert_contains "narrow has dot" "·" "$OUT_NAR"
 
+OUT_MOD_ZERO=$(printf '%s' '{"session_id":"s_zero_mod","model":{"display_name":"Gemini 3.8 Flash"},"terminal_width":120,"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":10,"current_usage":{"input_tokens":1000,"cache_read_input_tokens":0}},"quota":{"gemini-weekly":{"remaining_fraction":0.845}}}' | "$JB_DIR/statusline.sh")
+assert_contains "modern wide 0% cache emits dim (0% cache)" $'\x1b[90m(0% cache)\x1b[0m' "$OUT_MOD_ZERO"
+rm -f "$JB_DIR/usage_logs/s_zero_mod.json"
+
 # NO_COLOR test
 OUT_NOCOLOR=$(NO_COLOR=1 bash -c 'printf "%s" "$1" | "$2"' _ "$PAYLOAD_BASE" "$JB_DIR/statusline.sh")
 assert_eq "NO_COLOR strips ESC" "0" "$(printf '%s' "$OUT_NOCOLOR" | grep -c $'\x1b' || true)"
+assert_contains "NO_COLOR wide has % cache" "(80% cache)" "$OUT_NOCOLOR"
 
 # Plain theme test (pure 7-bit ASCII, zero ESC)
 "$JB_DIR/report.sh" set theme plain >/dev/null
 OUT_PLAIN=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 120}' | "$JB_DIR/statusline.sh")
 assert_eq "plain statusline zero ESC" "0" "$(printf '%s' "$OUT_PLAIN" | grep -c $'\x1b' || true)"
 assert_eq "plain statusline pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$OUT_PLAIN") || true)"
+assert_contains "plain wide has % cache" "(80% cache)" "$OUT_PLAIN"
+
+OUT_PLAIN_105=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 105}' | "$JB_DIR/statusline.sh")
+assert_contains "plain width 105 has % cache" "(80% cache)" "$OUT_PLAIN_105"
+assert_eq "plain 105 zero ESC" "0" "$(printf '%s' "$OUT_PLAIN_105" | grep -c $'\x1b' || true)"
+assert_eq "plain 105 pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$OUT_PLAIN_105") || true)"
+
+OUT_PLAIN_104=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 104}' | "$JB_DIR/statusline.sh")
+assert_contains "plain width 104 keeps compact cache pct" "(80%)" "$OUT_PLAIN_104"
+assert_not_contains "plain width 104 omits % cache" "% cache" "$OUT_PLAIN_104"
+assert_eq "plain 104 zero ESC" "0" "$(printf '%s' "$OUT_PLAIN_104" | grep -c $'\x1b' || true)"
+assert_eq "plain 104 pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$OUT_PLAIN_104") || true)"
+
+OUT_PLAIN_90=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 90}' | "$JB_DIR/statusline.sh")
+assert_contains "plain medium keeps compact cache pct" "(80%)" "$OUT_PLAIN_90"
+assert_not_contains "plain medium omits % cache" "% cache" "$OUT_PLAIN_90"
+assert_eq "plain 90 zero ESC" "0" "$(printf '%s' "$OUT_PLAIN_90" | grep -c $'\x1b' || true)"
+assert_eq "plain 90 pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$OUT_PLAIN_90") || true)"
+
+OUT_PLAIN_ZERO=$(printf '%s' '{"session_id":"s_zero_plain","model":{"display_name":"Gemini 3.8 Flash"},"terminal_width":120,"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":10,"current_usage":{"input_tokens":1000,"cache_read_input_tokens":0}},"quota":{"gemini-weekly":{"remaining_fraction":0.845}}}' | "$JB_DIR/statusline.sh")
+assert_contains "plain wide 0% cache has (0% cache)" "(0% cache)" "$OUT_PLAIN_ZERO"
+assert_eq "plain 0% zero ESC" "0" "$(printf '%s' "$OUT_PLAIN_ZERO" | grep -c $'\x1b' || true)"
+assert_eq "plain 0% pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$OUT_PLAIN_ZERO") || true)"
+rm -f "$JB_DIR/usage_logs/s_zero_plain.json"
 
 # Report tests: set theme/color & invalid values
 "$JB_DIR/report.sh" set theme compact >/dev/null
 "$JB_DIR/report.sh" set color on >/dev/null
+OUT_COMPACT_WIDE=$(printf '%s' "$PAYLOAD_BASE" | jq -c '. + {terminal_width: 120}' | "$JB_DIR/statusline.sh")
+assert_contains "compact wide keeps compact cache pct" "(80%)" "$OUT_COMPACT_WIDE"
+assert_not_contains "compact wide omits % cache" "% cache" "$OUT_COMPACT_WIDE"
 if "$JB_DIR/report.sh" set theme bogus 2>/dev/null; then
   echo "FAIL: invalid theme should exit 1" >&2
   FAIL=$((FAIL + 1))
@@ -1173,18 +1218,18 @@ if [ -n "$QCYC_BAK" ]; then printf '%s' "$QCYC_BAK" > "$JB_DIR/quota_cycles.json
 
 # Statusline semantic color checks (Cache 3-tier, Ctx/Wk mid-tier bold, null & boundaries)
 SL_MID=$(printf '%s' '{"session_id":"s_col_1","model":{"display_name":"Gemini 4 Hydrogen"},"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":65,"current_usage":{"input_tokens":400,"cache_read_input_tokens":600}},"quota":{"gemini-weekly":{"remaining_fraction":0.20}}}' | "$JB_DIR/statusline.sh")
-assert_contains "statusline Cache 60% emits green (32m)" $'\x1b[32m(60%)\x1b[0m' "$SL_MID"
+assert_contains "statusline Cache 60% emits green (32m)" $'\x1b[32m(60% cache)\x1b[0m' "$SL_MID"
 assert_contains "statusline Ctx 65% emits bold (1m)" $'\x1b[1m65%\x1b[0m' "$SL_MID"
 assert_contains "statusline Wk 20% emits bold (1m)" $'\x1b[1m20%\x1b[0m' "$SL_MID"
 assert_not_contains "statusline mid-tier does not emit plain yellow (33m)" $'\x1b[33m' "$SL_MID"
 
 SL_HIGH=$(printf '%s' '{"session_id":"s_col_2","model":{"display_name":"Gemini 4 Hydrogen"},"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":85,"current_usage":{"input_tokens":100,"cache_read_input_tokens":900}},"quota":{"gemini-weekly":{"remaining_fraction":0.10}}}' | "$JB_DIR/statusline.sh")
-assert_contains "statusline Cache 90% emits bold_green (1;32m)" $'\x1b[1;32m(90%)\x1b[0m' "$SL_HIGH"
+assert_contains "statusline Cache 90% emits bold_green (1;32m)" $'\x1b[1;32m(90% cache)\x1b[0m' "$SL_HIGH"
 assert_contains "statusline Ctx 85% emits bold_red (1;31m)" $'\x1b[1;31m85%\x1b[0m' "$SL_HIGH"
 assert_contains "statusline Wk 10% emits bold_red (1;31m)" $'\x1b[1;31m10%\x1b[0m' "$SL_HIGH"
 
 SL_LOW=$(printf '%s' '{"session_id":"s_col_3","model":{"display_name":"Gemini 4 Hydrogen"},"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":20,"current_usage":{"input_tokens":800,"cache_read_input_tokens":200}},"quota":{"gemini-weekly":{"remaining_fraction":0.80}}}' | "$JB_DIR/statusline.sh")
-assert_contains "statusline Cache 20% emits dim (90m)" $'\x1b[90m(20%)\x1b[0m' "$SL_LOW"
+assert_contains "statusline Cache 20% emits dim (90m)" $'\x1b[90m(20% cache)\x1b[0m' "$SL_LOW"
 assert_contains "statusline Ctx 20% emits green (32m)" $'\x1b[32m20%\x1b[0m' "$SL_LOW"
 assert_contains "statusline Wk 80% emits green (32m)" $'\x1b[32m80%\x1b[0m' "$SL_LOW"
 
