@@ -39,7 +39,7 @@ chmod +x install.sh && ./install.sh
 
 All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your terminal** (`jenbach ...`) on Linux, macOS, WSL, and Windows:
 
-- Usage report (defaults to current weekly quota cycle): `jenbach` (or `!jenbach` inside `agy`)
+- Usage report (defaults to current week (Mon-Sun)): `jenbach` (or `!jenbach` inside `agy`)
 - Interactive settings (terminal): `jenbach config`
 - Project info & version: `jenbach info` (or `jenbach --version`)
 - Help: `jenbach --help` (or `!jenbach help`)
@@ -52,14 +52,14 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 
 | Command | Description |
 | --- | --- |
-| `!jenbach` | Show report using `default_view` (`cycle` by default, or `all`) |
-| `!jenbach cycle [gemini\|argon\|3p]` | Show current weekly quota cycle (all buckets or a specific bucket) |
-| `!jenbach cycles` | Show tracked weekly quota buckets and recently detected resets |
-| `!jenbach all` | Show all recorded sessions regardless of cycle or date |
+| `!jenbach` | Show report using `default_view` (`week` by default, or `today`, `month`, `all`) |
+| `!jenbach all` | Show all recorded sessions regardless of date |
 | `!jenbach today` | Show sessions recorded today |
-| `!jenbach week` | Show sessions from the last 7 days |
+| `!jenbach week [#]` | Show calendar week (Mon–Sun; optional `#` = weeks ago, default `0`) |
+| `!jenbach weeks` | Show weekly usage summary table |
+| `!jenbach month [#\|YYYY-MM]` | Show calendar month (optional `#` = months ago, default `0`, or `YYYY-MM`) |
 | `!jenbach --month YYYY-MM` | Show sessions from a specific month |
-| `!jenbach --from YYYY-MM-DD [--to YYYY-MM-DD]` | Show sessions within a date range |
+| `!jenbach --from <DATE\|DATETIME> [--to <DATE\|DATETIME>]` | Show sessions within a date/datetime range (`YYYY-MM-DD[ HH:MM]`) |
 | `!jenbach [view] -n <N>` / `--limit <N>` | Override `history_limit` for one run and disable height auto-fit |
 
 ### Quick Commands
@@ -76,7 +76,7 @@ All commands work both **inside `agy`** (`!jenbach ...`) and **directly in your 
 | `!jenbach set auto-update [on\|off]` | Enable or disable automatic background price checks |
 | `!jenbach set check-interval <1..720>` | Set how often (in hours) prices are checked automatically |
 | `!jenbach set check-updates [on\|off]` | Enable or disable automatic background app update checks |
-| `!jenbach set default-view [cycle\|all]` | Set the default report view for `!jenbach` |
+| `!jenbach set default-view [week\|today\|month\|all]` | Set the default report view for `!jenbach` |
 | `!jenbach set subagent-mode [split\|combined]` | Show subagents as tree rows (`split`) or merged into parent (`combined`) |
 | `!jenbach set status-sub [on\|off]` | Show or hide `(Sub: $...)` detail in the statusline |
 | `!jenbach set auto-fit [on\|off]` | Auto-fit recent sessions table to terminal height |

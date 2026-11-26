@@ -4,7 +4,6 @@ JB_DIR="$AGY_DIR/jenbach"
 LOG_DIR="$JB_DIR/usage_logs"
 CFG_FILE="$JB_DIR/report_config.json"
 PRICES_FILE="$JB_DIR/prices.json"
-QUOTA_FILE="$JB_DIR/quota_cycles.json"
 LIB_DIR="$JB_DIR/lib"; [ -f "$LIB_DIR/common.jq" ] || LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 [ -d "$LOG_DIR" ] || mkdir -p "$LOG_DIR"
 
@@ -56,7 +55,6 @@ if [ -r "$LIB_DIR/app_update.sh" ]; then
   jenbach_maybe_check_app_update "$JB_DIR" "$CFG_FILE" "$CFG_RAW"
 fi
 PRICES_RAW=""; [ -r "$PRICES_FILE" ] && PRICES_RAW=$(< "$PRICES_FILE")
-QUOTA_RAW=""; [ -r "$QUOTA_FILE" ] && QUOTA_RAW=$(< "$QUOTA_FILE")
 SUB_RAW=""; [ "$SID" != "none" ] && [ -r "$LOG_DIR/.sub_${SID}.json" ] && SUB_RAW=$(< "$LOG_DIR/.sub_${SID}.json")
 SUB_SYNCING="false"; [ "$SID" != "none" ] && [ -d "$LOG_DIR/.sub_${SID}.lock" ] && SUB_SYNCING="true"
 
@@ -72,7 +70,7 @@ else
   FRAME=$(( ${SECONDS:-0} % 8 ))
 fi
 
-OUTPUT=$(printf '%s' "$INPUT" | jq -L "$LIB_DIR" -r --arg now "$NOW" --arg sid "$SID" --arg prev_raw "$PREV_RAW" --arg cfg_raw "$CFG_RAW" --arg prices_raw "$PRICES_RAW" --arg quota_raw "$QUOTA_RAW" --arg sub_raw "$SUB_RAW" --arg sub_running "$SUB_RUNNING" --arg sub_syncing "$SUB_SYNCING" --argjson sub_frame "$FRAME" --argjson cur_prompts "$CUR_PROMPTS" --arg no_color "${NO_COLOR:-}" '
+OUTPUT=$(printf '%s' "$INPUT" | jq -L "$LIB_DIR" -r --arg now "$NOW" --arg sid "$SID" --arg prev_raw "$PREV_RAW" --arg cfg_raw "$CFG_RAW" --arg prices_raw "$PRICES_RAW" --arg sub_raw "$SUB_RAW" --arg sub_running "$SUB_RUNNING" --arg sub_syncing "$SUB_SYNCING" --argjson sub_frame "$FRAME" --argjson cur_prompts "$CUR_PROMPTS" --arg no_color "${NO_COLOR:-}" '
   include "common";
 
   ($prev_raw | try fromjson catch {} | if type == "object" then . else {} end) as $prev |
@@ -192,70 +190,9 @@ OUTPUT=$(printf '%s' "$INPUT" | jq -L "$LIB_DIR" -r --arg now "$NOW" --arg sid "
   ([($prev.user_prompts | if type == "number" then . else 0 end), $cur_prompts] | max) as $user_prompts |
   (($cu != $pu) or ($cc != $pc) or ($co != $po) or ($max_tot_in != $prev_tot_in) or $sig_changed or ($model != ($prev.model // "")) or ($fcost != ($prev.cost_usd // 0)) or ($sub_cost != $prev_sub) or ($main_cost != ($prev.main_cost_usd // -1)) or ($has_subagents != ($prev.has_subagents // false)) or ($sub_records != ($prev.subagent_records // [])) or ($user_prompts != ($prev.user_prompts | if type == "number" then . else -1 end))) as $state_changed |
 
-  ($quota_raw | try fromjson catch {} | if type == "object" then . else {} end) as $qstate |
-  ($qstate.buckets | if type == "object" then . else {} end) as $raw_qbuckets |
-  sanitize_quota_buckets($raw_qbuckets) as $qbuckets |
-  ($qbuckets != $raw_qbuckets) as $sanitized_changed |
-  (
-    reduce ((.quota | if type == "object" then . else {} end) | to_entries[] |
-      select((.key | endswith("-weekly")) and (.value | type == "object") and (.value.disabled != true) and ((.value.remaining_fraction | type) == "number") and (.value.remaining_fraction >= 0) and (.value.remaining_fraction <= 1))
-    ) as $e (
-      {buckets: $qbuckets, changed: $sanitized_changed};
-      ($e.key) as $bk |
-      ($e.value.remaining_fraction) as $rem |
-      ($e.value.reset_time // "" | tostring) as $rt |
-      parse_iso_epoch($rt) as $rt_ep |
-      if (.buckets | has($bk) | not) then
-        .buckets[$bk] = {
-          last_remaining: $rem,
-          last_reset_time: $rt,
-          cycle_started_at: "",
-          resets: []
-        } | .changed = true
-      else
-        (.buckets[$bk] | if type == "object" then . else {} end) as $pb |
-        (if ($pb.last_remaining | type) == "number" then $pb.last_remaining else $rem end) as $prev_rem |
-        ($pb.last_reset_time // "" | tostring) as $prev_rt |
-        parse_iso_epoch($prev_rt) as $prev_rt_ep |
-        ($pb.cycle_started_at // "" | tostring) as $prev_cs |
-        ($pb.resets | if type == "array" then . else [] end) as $prev_resets |
-        (if ($prev_rem < 0.995 and $rem >= $prev_rem and $rt_ep > 0 and $prev_rt_ep > 0 and (($rt_ep - $prev_rt_ep) >= 21600)) then "reset_time_changed"
-         elif (($rem - $prev_rem) >= 0.05) then "remaining_jump"
-         else "" end) as $reason |
-        (if $rt == "" then $prev_rt
-         elif ($rt_ep > 0 and $prev_rt_ep > 0 and $rt_ep < $prev_rt_ep) then $prev_rt
-         else $rt end) as $eff_rt |
-        if $reason != "" then
-          .buckets[$bk] = {
-            last_remaining: $rem,
-            last_reset_time: $eff_rt,
-            cycle_started_at: $now,
-            resets: (($prev_resets + [{
-              detected_at: $now,
-              reason: $reason,
-              prev_remaining: $prev_rem,
-              new_remaining: $rem,
-              reset_time: $eff_rt
-            }])[-50:])
-          } | .changed = true
-        elif (((($prev_rem - $rem) | fabs) >= 0.005) or ($prev_rt == "" and $eff_rt != "") or ($eff_rt != $prev_rt and $rt_ep > 0 and $prev_rt_ep > 0 and (($rt_ep - $prev_rt_ep) >= (if $rem < 0.995 then 60 else 21600 end)))) then
-          .buckets[$bk] = ($pb + {
-            last_remaining: $rem,
-            last_reset_time: $eff_rt,
-            cycle_started_at: $prev_cs,
-            resets: $prev_resets
-          }) | .changed = true
-        else
-          .
-        end
-      end
-    )
-  ) as $qres |
-
   $hud_line,
   (if (($ci > 0 or $fcost > 0) and $sid != "none" and $state_changed) then ({timestamp:$now, session_id:$sid, last_turn_sig:$sig, last_tot_in:$max_tot_in, model:$model, input_tokens:$ci, uncached_tokens:$cu, cache_tokens:$cc, cache_pct:$cpct, output_tokens:$co, main_cost_usd:$main_cost, subagent_cost_usd:$sub_cost, cost_usd:$fcost, has_subagents:$has_subagents, subagent_records:$sub_records, user_prompts:$user_prompts} | tojson) else "" end),
-  (if ($cfg.chain_enabled == false) then "" else (($cfg.chained_command // "") | tostring | gsub("[\r\n]+"; " ")) end),
-  (if $qres.changed then ({buckets: $qres.buckets} | tojson) else "" end)
+  (if ($cfg.chain_enabled == false) then "" else (($cfg.chained_command // "") | tostring | gsub("[\r\n]+"; " ")) end)
 ' 2>/dev/null)
 
 if [ -n "$OUTPUT" ]; then
@@ -263,17 +200,11 @@ if [ -n "$OUTPUT" ]; then
     IFS= read -r LINE1 || true
     IFS= read -r JLOG || true
     IFS= read -r CHAIN_CMD || true
-    IFS= read -r QLOG || true
   } <<< "$OUTPUT"
 
   if [ -n "$JLOG" ] && [ "$SID" != "none" ]; then
     TMP_LOG="$LOG_DIR/.${SID}.tmp.$$"
     printf '%s\n' "$JLOG" > "$TMP_LOG" && mv "$TMP_LOG" "$LOG_DIR/${SID}.json"
-  fi
-
-  if [ -n "$QLOG" ]; then
-    TMP_Q="$JB_DIR/.quota_cycles.tmp.$$"
-    printf '%s\n' "$QLOG" > "$TMP_Q" && mv -f "$TMP_Q" "$QUOTA_FILE"
   fi
 
   if [ -n "$CHAIN_CMD" ]; then

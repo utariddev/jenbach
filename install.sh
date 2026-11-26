@@ -30,13 +30,14 @@ else
 fi
 
 # Migrate or initialize report_config.json atomically without losing existing settings
-DEFAULT_CFG='{"short_tokens":true,"statusline_short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"chain_enabled":true,"chained_command":"","theme":"modern","color":"auto","auto_update_prices":true,"price_check_interval_hours":24,"prices_url":"https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
+DEFAULT_CFG='{"short_tokens":true,"statusline_short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"chain_enabled":true,"chained_command":"","theme":"modern","color":"auto","auto_update_prices":true,"price_check_interval_hours":24,"prices_url":"https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"week","subagent_cost_mode":"split","statusline_subagent_detail":true}'
 if [ ! -f "$CFG_FILE" ] || ! jq -e 'type == "object"' "$CFG_FILE" >/dev/null 2>&1; then
   printf '%s\n' "$DEFAULT_CFG" > "${CFG_FILE}.tmp.$$" && mv "${CFG_FILE}.tmp.$$" "$CFG_FILE"
 else
-  TMP_C=$(jq --argjson def "$DEFAULT_CFG" '$def * .' "$CFG_FILE")
+  TMP_C=$(jq --argjson def "$DEFAULT_CFG" '($def * .) | if .default_view == "cycle" then .default_view = "week" else . end' "$CFG_FILE")
   printf '%s\n' "$TMP_C" > "${CFG_FILE}.tmp.$$" && mv "${CFG_FILE}.tmp.$$" "$CFG_FILE"
 fi
+rm -f "$JB_DIR/quota_cycles.json" "$JB_DIR"/.quota_cycles.tmp.*
 
 # Validate and back up settings.json
 if [ ! -f "$SETTINGS_FILE" ]; then

@@ -169,43 +169,30 @@ def model_quota_bucket($m):
   elif ($ml | contains("gemini")) or ($ml | contains("flash")) or ($ml | contains("hydrogen")) or ($ml | contains("neon")) then "gemini-weekly"
   else "3p-weekly" end;
 
-def fmt_bucket_name($b):
-  if   $b == "gemini-weekly"           then "Gemini (Weekly)"
-  elif $b == "gemini-argon-wtu-weekly" then "Gemini Argon (Weekly)"
-  elif $b == "3p-weekly"               then "Claude / 3P (Weekly)"
-  else ($b // "unknown" | tostring) end;
+def normalize_default_view($v):
+  if ($v == "week" or $v == "today" or $v == "month" or $v == "all") then $v else "week" end;
 
-def parse_iso_epoch($s):
-  (($s // "") | tostring | sub("\\.[0-9]+Z$"; "Z")) as $clean |
-  if ($clean | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) then
-    ($clean | try fromdateiso8601 catch 0)
-  else 0 end;
+def week_monday($ymd):
+  (($ymd // "") | tostring) as $d |
+  if ($d | test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$")) then
+    (($d + "T12:00:00Z") | try fromdateiso8601 catch null) as $ep |
+    if $ep == null or ($ep | strftime("%Y-%m-%d")) != $d then null
+    else
+      (($ep | gmtime[6] + 6) % 7) as $since_mon |
+      ($ep - ($since_mon * 86400))
+    end
+  else null end;
 
-def fmt_iso_utc($s):
-  (($s // "") | tostring) as $raw |
-  if ($raw | length) >= 16 and ($raw | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}")) then
-    "\($raw[0:10]) \($raw[11:16])"
-  elif ($raw | length) > 0 then $raw
-  else "N/A" end;
-
-def is_bogus_reset($r):
-  (($r | type) == "object") and
-  (($r.reason // "") == "reset_time_changed") and
-  ((($r.prev_remaining | type) == "number") and ($r.prev_remaining >= 0.995)) and
-  ((($r.new_remaining | type) == "number") and ($r.new_remaining >= 0.995));
-
-def sanitize_quota_buckets($raw_buckets):
-  ($raw_buckets | if type == "object" then . else {} end) |
-  with_entries(
-    select((.value | type) == "object") |
-    (.value.resets | if type == "array" then . else [] end) as $raw_resets |
-    ($raw_resets | map(select((type == "object") and (is_bogus_reset(.) | not)))) as $clean_resets |
-    .value.resets = $clean_resets |
-    if ($clean_resets | length) != ($raw_resets | length) then
-      if ($clean_resets | length) == 0 then
-        .value.cycle_started_at = ""
-      else
-        .value.cycle_started_at = ($clean_resets[-1].detected_at // .value.cycle_started_at // "")
-      end
-    else . end
-  );
+def month_offset_ym($ymd; $offset):
+  (($ymd // "") | tostring) as $d |
+  if ($d | test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$")) and (($offset | type) == "number") and ($offset >= 0) then
+    ($d[0:4] | tonumber) as $cy |
+    ($d[5:7] | tonumber) as $cm |
+    (($cy * 12) + ($cm - 1) - ($offset | floor)) as $tot_m |
+    if $tot_m < 0 then null
+    else
+      (($tot_m / 12) | floor) as $ty |
+      (($tot_m % 12) + 1) as $tm |
+      "\(("0000" + ($ty | tostring))[-4:])-\(("0" + ($tm | tostring))[-2:])"
+    end
+  else null end;

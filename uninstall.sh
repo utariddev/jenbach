@@ -58,7 +58,7 @@ if [ "$PURGE" = true ]; then
   fi
   echo "Jenbach uninstalled and all usage logs purged."
 else
-  rm -f "$JB_DIR/statusline.sh" "$JB_DIR/report.sh" "$JB_DIR/VERSION" "$JB_DIR/prices.json" "$JB_DIR/report_config.json" "$JB_DIR/lib/common.jq" "$JB_DIR/lib/auto_update.sh" "$JB_DIR/lib/app_update.sh" "$JB_DIR/lib/subagent_sync.py" "$JB_DIR/.prices_next_check" "$JB_DIR/.prices.etag" "$JB_DIR/.latest_version" "$JB_DIR"/.latest_version.tmp.* "$JB_DIR/.app_update_next_check" "$JB_DIR"/.app_update_next_check.tmp.* "$JB_DIR"/.app_update.hdr.* "$JB_DIR"/.quota_cycles.tmp.* "$JB_DIR/usage_logs"/.sub_*.json "$JB_DIR/usage_logs"/.sub_*.ttl
+  rm -f "$JB_DIR/statusline.sh" "$JB_DIR/report.sh" "$JB_DIR/VERSION" "$JB_DIR/prices.json" "$JB_DIR/report_config.json" "$JB_DIR/lib/common.jq" "$JB_DIR/lib/auto_update.sh" "$JB_DIR/lib/app_update.sh" "$JB_DIR/lib/subagent_sync.py" "$JB_DIR/.prices_next_check" "$JB_DIR/.prices.etag" "$JB_DIR/.latest_version" "$JB_DIR"/.latest_version.tmp.* "$JB_DIR/.app_update_next_check" "$JB_DIR"/.app_update_next_check.tmp.* "$JB_DIR"/.app_update.hdr.* "$JB_DIR/quota_cycles.json" "$JB_DIR"/.quota_cycles.tmp.* "$JB_DIR/usage_logs"/.sub_*.json "$JB_DIR/usage_logs"/.sub_*.ttl
   rm -rf "$JB_DIR/.prices_update.lock" "$JB_DIR/.app_update.lock" "$JB_DIR/usage_logs"/.sub_*.lock "$JB_DIR/lib/__pycache__"
   rmdir "$JB_DIR/lib" 2>/dev/null || true
   echo "Jenbach uninstalled. Usage logs preserved in $JB_DIR/usage_logs (use --purge to delete)."

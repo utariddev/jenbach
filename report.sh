@@ -4,7 +4,6 @@ JB_DIR="$AGY_DIR/jenbach"
 LOG_DIR="$JB_DIR/usage_logs"
 CFG_FILE="$JB_DIR/report_config.json"
 PRICES_FILE="$JB_DIR/prices.json"
-QUOTA_FILE="$JB_DIR/quota_cycles.json"
 LIB_DIR="$JB_DIR/lib"; [ -f "$LIB_DIR/common.jq" ] || LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 VER_FILE="$JB_DIR/VERSION"; [ -f "$VER_FILE" ] || VER_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/VERSION"
 IS_TTY="false"; [ -t 1 ] && IS_TTY="true"
@@ -59,7 +58,7 @@ if [ ! -f "$CFG_FILE" ] || ! jq -e 'type == "object"' "$CFG_FILE" >/dev/null 2>&
   "prices_url": "https://raw.githubusercontent.com/utariddev/jenbach/main/prices.json",
   "check_app_updates": true,
   "app_repo_url": "https://github.com/utariddev/jenbach",
-  "default_view": "cycle",
+  "default_view": "week",
   "subagent_cost_mode": "split",
   "statusline_subagent_detail": true
 }
@@ -104,8 +103,48 @@ get_app_update_ver() {
 
 validate_ymd() {
   local d="$1"
-  [[ "$d" =~ ^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$ ]] || return 1
-  jq -en --arg d "$d" '(try (($d | strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == $d) catch false)' >/dev/null 2>&1
+  local re='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+  [[ "$d" =~ $re ]] || return 1
+  jq -en --arg d "$d" '(try ((($d + "T12:00:00Z") | fromdateiso8601 | strftime("%Y-%m-%d")) == $d) catch false)' >/dev/null 2>&1
+}
+
+parse_nonneg_int_bounded() {
+  local raw="$1"
+  local max="$2"
+  local re='^[0-9]+$'
+  [[ "$raw" =~ $re ]] || return 1
+  local stripped="${raw#"${raw%%[!0]*}"}"
+  [ -n "$stripped" ] || stripped=0
+  [ "${#stripped}" -le 4 ] || return 1
+  [ "$stripped" -le "$max" ] || return 1
+  printf '%s' "$stripped"
+}
+
+normalize_range_bound() {
+  local val="$1"
+  local is_end="$2"
+  local re_ymd='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  local re_dt='^([0-9]{4}-[0-9]{2}-[0-9]{2})[ T]([0-9]{2}:[0-9]{2})$'
+  local re_hm='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+  if [[ "$val" =~ $re_ymd ]]; then
+    validate_ymd "$val" || return 1
+    if [ "$is_end" = "1" ]; then
+      RANGE_CMP="${val} 23:59"
+    else
+      RANGE_CMP="${val} 00:00"
+    fi
+    RANGE_LBL="$val"
+    return 0
+  elif [[ "$val" =~ $re_dt ]]; then
+    local d="${BASH_REMATCH[1]}"
+    local hm="${BASH_REMATCH[2]}"
+    validate_ymd "$d" || return 1
+    [[ "$hm" =~ $re_hm ]] || return 1
+    RANGE_CMP="${d} ${hm}"
+    RANGE_LBL="${d} ${hm}"
+    return 0
+  fi
+  return 1
 }
 
 show_help() {
@@ -113,15 +152,15 @@ show_help() {
 Usage: jenbach [command|filter] [options]
 
 Filters & Views:
-  (no args)                      Show report using default_view (cycle or all)
-  cycle [gemini|argon|3p]        Show current weekly quota cycle (all or specific bucket)
-  cycles                         Show tracked weekly quota buckets and detected resets
+  (no args)                      Show report using default_view (week, today, month, or all)
   all                            Show all recorded sessions
   today                          Show sessions from today
-  week                           Show sessions from the last 7 days
+  week [#]                       Show calendar week (Mon-Sun; # = weeks ago, default 0)
+  weeks                          Show weekly usage summary table
+  month [#|YYYY-MM]              Show calendar month (# = months ago, default 0, or YYYY-MM)
   --month YYYY-MM                Show sessions from a specific month
-  --from YYYY-MM-DD [--to ...]   Show sessions within a date range
-  -n <N>, --limit <N>            Show at most N recent sessions (disables auto-fit)
+  --from DT [--to DT]            Show sessions within a date/datetime range (YYYY-MM-DD[ HH:MM])
+  -n <N>, --limit <N>            Show at most N recent sessions/weeks (disables auto-fit)
 
 Commands:
   info                           Show version, paths, pricing status, and environment
@@ -137,7 +176,7 @@ Commands:
   set auto-update [on|off]       Toggle automatic background price checks
   set check-interval <1..720>    Set price check interval in hours
   set check-updates [on|off]     Toggle automatic background app update checks
-  set default-view [cycle|all]   Set default report view
+  set default-view [week|today|month|all]  Set default report view
   set subagent-mode [split|combined]  Set subagent report display mode
   set status-sub [on|off]        Toggle subagent detail in statusline
   set auto-fit [on|off]          Toggle terminal height auto-fit for session history
@@ -155,7 +194,7 @@ show_current_settings() {
     (.theme // "modern") as $theme |
     ($theme == "plain") as $plain |
     (.color // "auto") as $color_mode |
-    (.default_view // "cycle") as $def_view |
+    normalize_default_view(.default_view) as $def_view |
     (.subagent_cost_mode // "split") as $sub_mode |
     (if ($plain or $color_mode == "off" or $no_color != "") then false elif $color_mode == "on" then true else ($is_tty == "true") end) as $use_color |
     def badge($on):
@@ -186,7 +225,16 @@ show_current_settings() {
 
 cycle_default_view() {
   local tmp
-  tmp=$(jq '.default_view = (if (.default_view // "cycle") == "cycle" then "all" else "cycle" end)' "$CFG_FILE") && write_cfg "$tmp"
+  tmp=$(jq -L "$LIB_DIR" '
+    include "common";
+    normalize_default_view(.default_view) as $cur |
+    .default_view = (
+      if $cur == "week" then "today"
+      elif $cur == "today" then "month"
+      elif $cur == "month" then "all"
+      else "week" end
+    )
+  ' "$CFG_FILE") && write_cfg "$tmp"
 }
 
 cycle_subagent_mode() {
@@ -228,10 +276,13 @@ set_bool() {
 
 # CLI Parameter Handling (Works inside !jenbach and terminal)
 FILTER_MODE=""
-CYCLE_BUCKET=""
+WEEK_OFFSET=0
+MONTH_OFFSET=0
 FILTER_MONTH=""
-FILTER_FROM=""
-FILTER_TO=""
+FILTER_FROM_CMP=""
+FILTER_FROM_LBL=""
+FILTER_TO_CMP=""
+FILTER_TO_LBL=""
 EXPLICIT_LIMIT=0
 
 case "${1:-}" in
@@ -252,7 +303,7 @@ case "${1:-}" in
     VER=$(read_version)
     APP_UPDATE_VER=$(get_app_update_ver "$VER")
     CFG_JSON=$(jq -c '.' "$CFG_FILE" 2>/dev/null)
-    [ -z "$CFG_JSON" ] && CFG_JSON='{"theme":"modern","color":"auto","default_view":"cycle"}'
+    [ -z "$CFG_JSON" ] && CFG_JSON='{"theme":"modern","color":"auto","default_view":"week"}'
     PRICES_UPD="missing"
     if [ -f "$PRICES_FILE" ]; then
       PRICES_UPD=$(jq -r '.updated_at // "N/A"' "$PRICES_FILE" 2>/dev/null || echo "invalid")
@@ -292,7 +343,7 @@ case "${1:-}" in
       ($cfg.theme // "modern") as $theme |
       ($theme == "plain") as $plain |
       ($cfg.color // "auto") as $color_mode |
-      ($cfg.default_view // "cycle") as $def_view |
+      normalize_default_view($cfg.default_view) as $def_view |
       ($cfg.subagent_cost_mode // "split") as $sub_mode |
       (if ($cfg.statusline_subagent_detail == false) then "off" else "on" end) as $status_sub |
       (if ($plain or $color_mode == "off" or $no_color != "") then false elif $color_mode == "on" then true else ($is_tty == "true") end) as $use_color |
@@ -320,87 +371,6 @@ case "${1:-}" in
       "",
       paint("Named after the peaceful town of Jenbach."; "dim"; $use_color)
     '
-    exit 0
-    ;;
-  cycles)
-    if [ ! -f "$QUOTA_FILE" ] || ! jq -e '.buckets | type == "object" and (length > 0)' "$QUOTA_FILE" >/dev/null 2>&1; then
-      echo "No weekly quota cycles tracked yet. Run statusline in agy to populate quota_cycles.json."
-      exit 0
-    fi
-    CFG_JSON=$(jq -c '.' "$CFG_FILE" 2>/dev/null)
-    [ -z "$CFG_JSON" ] && CFG_JSON='{"theme":"modern","color":"auto"}'
-    CYCLES_OUT=$(jq -L "$LIB_DIR" -r --argjson cfg "$CFG_JSON" --arg is_tty "$IS_TTY" --arg no_color "${NO_COLOR:-}" '
-      include "common";
-      ($cfg.theme // "modern") as $theme |
-      ($theme == "plain") as $plain |
-      ($cfg.color // "auto") as $color_mode |
-      (if ($plain or $color_mode == "off" or $no_color != "") then false elif $color_mode == "on" then true else ($is_tty == "true") end) as $use_color |
-      def fmt_pct($f):
-        if ($f | type) == "number" then "\((($f * 1000) | round) / 10)%" else "N/A" end;
-      (.buckets | if type == "object" then . else {} end) as $raw_qbuckets |
-      sanitize_quota_buckets($raw_qbuckets) as $qbuckets |
-      (if $qbuckets != $raw_qbuckets then ({buckets: $qbuckets} | tojson) else "" end),
-      paint("WEEKLY QUOTA CYCLES"; "bold_cyan"; $use_color),
-      (
-        [($qbuckets | to_entries | sort_by(.key)[]) |
-          (.value.last_remaining) as $rem |
-          (if (.value.cycle_started_at // "") == "" then "All recorded" else .value.cycle_started_at end) as $cs |
-          fmt_iso_utc(.value.last_reset_time) as $rt |
-          ((.value.resets // []) | length) as $rc |
-          (if ($rem | type) != "number" then "dim" elif ($rem * 100) > 30 then "green" elif ($rem * 100) >= 15 then "bold" else "bold_red" end) as $rc_col |
-          {
-            sep_before: false,
-            bold_row: false,
-            cells: [
-              {t: fmt_bucket_name(.key), c: "bold_white"},
-              {t: fmt_pct($rem), c: $rc_col},
-              {t: $cs, c: (if $cs == "All recorded" then "dim" else "" end)},
-              {t: $rt, c: "dim"},
-              {t: ($rc | tostring), c: ""}
-            ]
-          }
-        ] as $brows |
-        render_table(["Bucket", "Remaining", "Cycle Start", "Next Reset (UTC)", "Resets"]; ["l", "r", "l", "l", "r"]; $brows; $plain; $use_color)
-      ),
-      (
-        [$qbuckets | to_entries[] | .key as $bk | (.value.resets // [])[] | . + {bucket: $bk}] |
-        sort_by(.detected_at // "") | reverse | .[0:20]
-      ) as $all_resets |
-      if ($all_resets | length) > 0 then
-        "",
-        paint("RECENT DETECTED RESETS"; "bold_cyan"; $use_color),
-        (
-          [$all_resets[] |
-            (if .reason == "reset_time_changed" then "Scheduled reset"
-             elif .reason == "remaining_jump" then "Quota jump"
-             else (.reason // "unknown") end) as $reason_lbl |
-            {
-              sep_before: false,
-              bold_row: false,
-              cells: [
-                {t: (.detected_at // "N/A"), c: "dim"},
-                {t: fmt_bucket_name(.bucket), c: "bold_white"},
-                {t: $reason_lbl, c: ""},
-                {t: fmt_pct(.prev_remaining), c: ""},
-                {t: fmt_pct(.new_remaining), c: "green"},
-                {t: fmt_iso_utc(.reset_time), c: "dim"}
-              ]
-            }
-          ] as $rrows |
-          render_table(["Detected At", "Bucket", "Reason", "Before", "After", "Next Reset (UTC)"]; ["l", "l", "l", "r", "r", "l"]; $rrows; $plain; $use_color)
-        )
-      else
-        "",
-        paint("No quota resets detected yet."; "dim"; $use_color)
-      end
-    ' "$QUOTA_FILE")
-    SANITIZED_JSON="${CYCLES_OUT%%$'\n'*}"
-    BODY="${CYCLES_OUT#*$'\n'}"
-    if [ -n "$SANITIZED_JSON" ]; then
-      TMP_Q="$JB_DIR/.quota_cycles.tmp.$$"
-      printf '%s\n' "$SANITIZED_JSON" > "$TMP_Q" && mv -f "$TMP_Q" "$QUOTA_FILE"
-    fi
-    printf '%s\n' "$BODY"
     exit 0
     ;;
   set)
@@ -492,11 +462,11 @@ case "${1:-}" in
         ;;
       default-view)
         case "${3:-}" in
-          cycle|all)
+          week|today|month|all)
             tmp=$(jq --arg v "${3}" '.default_view = $v' "$CFG_FILE") && write_cfg "$tmp"
             ;;
           *)
-            echo "Error: Invalid default view '${3:-}'. Use 'cycle' or 'all'." >&2
+            echo "Error: Invalid default view '${3:-}'. Use 'week', 'today', 'month', or 'all'." >&2
             exit 1
             ;;
         esac
@@ -682,7 +652,7 @@ case "${1:-}" in
       echo "  !jenbach set auto-update [on|off]"
       echo "  !jenbach set check-interval <hours>"
       echo "  !jenbach set check-updates [on|off]"
-      echo "  !jenbach set default-view [cycle|all]"
+      echo "  !jenbach set default-view [week|today|month|all]"
       echo "  !jenbach set subagent-mode [split|combined]"
       echo "  !jenbach set status-sub [on|off]"
       echo "  !jenbach set auto-fit [on|off]"
@@ -694,7 +664,7 @@ case "${1:-}" in
   *)
     while [ $# -gt 0 ]; do
       case "$1" in
-        all|today|week)
+        all|today|weeks)
           if [ -n "$FILTER_MODE" ]; then
             echo "Error: Conflicting filter option '$1'." >&2
             exit 1
@@ -702,24 +672,39 @@ case "${1:-}" in
           FILTER_MODE="$1"
           shift
           ;;
-        cycle)
+        week)
           if [ -n "$FILTER_MODE" ]; then
             echo "Error: Conflicting filter option '$1'." >&2
             exit 1
           fi
-          FILTER_MODE="cycle"
+          FILTER_MODE="week"
           shift
-          if [ $# -gt 0 ]; then
-            case "$1" in
-              gemini) CYCLE_BUCKET="gemini-weekly"; shift ;;
-              argon)  CYCLE_BUCKET="gemini-argon-wtu-weekly"; shift ;;
-              3p)     CYCLE_BUCKET="3p-weekly"; shift ;;
-              -*)     ;;
-              *)
-                echo "Error: Invalid cycle bucket '$1'. Use 'gemini', 'argon', or '3p'." >&2
-                exit 1
-                ;;
-            esac
+          if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            if ! WEEK_OFFSET=$(parse_nonneg_int_bounded "$1" 2600); then
+              echo "Error: Invalid week offset '$1'. Expected integer 0..2600." >&2
+              exit 1
+            fi
+            shift
+          fi
+          ;;
+        month)
+          if [ -n "$FILTER_MODE" ]; then
+            echo "Error: Conflicting filter option '$1'." >&2
+            exit 1
+          fi
+          FILTER_MODE="month"
+          shift
+          if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            _re_ym='^[0-9]{4}-(0[1-9]|1[0-2])$'
+            if [[ "$1" =~ $_re_ym ]]; then
+              FILTER_MONTH="$1"
+              shift
+            elif MONTH_OFFSET=$(parse_nonneg_int_bounded "$1" 1200); then
+              shift
+            else
+              echo "Error: Invalid month argument '$1'. Expected offset 0..1200 or YYYY-MM." >&2
+              exit 1
+            fi
           fi
           ;;
         --month)
@@ -727,7 +712,8 @@ case "${1:-}" in
             echo "Error: Conflicting filter option '$1'." >&2
             exit 1
           fi
-          if [ $# -lt 2 ] || ! [[ "$2" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]]; then
+          _re_ym='^[0-9]{4}-(0[1-9]|1[0-2])$'
+          if [ $# -lt 2 ] || ! [[ "$2" =~ $_re_ym ]]; then
             echo "Error: --month requires YYYY-MM format." >&2
             exit 1
           fi
@@ -740,41 +726,68 @@ case "${1:-}" in
             echo "Error: Conflicting filter option '$1'." >&2
             exit 1
           fi
-          if [ -n "$FILTER_FROM" ]; then
+          if [ -n "$FILTER_FROM_CMP" ]; then
             echo "Error: Duplicate --from option." >&2
             exit 1
           fi
-          if [ $# -lt 2 ] || ! validate_ymd "$2"; then
-            echo "Error: --from requires a valid YYYY-MM-DD date." >&2
+          if [ $# -lt 2 ]; then
+            echo "Error: --from requires a valid YYYY-MM-DD[ HH:MM] date/datetime." >&2
+            exit 1
+          fi
+          _raw_from="$2"
+          _shift_n=2
+          _re_ymd='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          _re_hm='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          if [[ "$_raw_from" =~ $_re_ymd ]] && [ $# -ge 3 ] && [[ "$3" =~ $_re_hm ]]; then
+            _raw_from="$2 $3"
+            _shift_n=3
+          fi
+          if ! normalize_range_bound "$_raw_from" 0; then
+            echo "Error: --from requires a valid YYYY-MM-DD[ HH:MM] date/datetime." >&2
             exit 1
           fi
           FILTER_MODE="range"
-          FILTER_FROM="$2"
-          shift 2
+          FILTER_FROM_CMP="$RANGE_CMP"
+          FILTER_FROM_LBL="$RANGE_LBL"
+          shift "$_shift_n"
           ;;
         --to)
           if [ -n "$FILTER_MODE" ] && [ "$FILTER_MODE" != "range" ]; then
             echo "Error: Conflicting filter option '$1'." >&2
             exit 1
           fi
-          if [ -n "$FILTER_TO" ]; then
+          if [ -n "$FILTER_TO_CMP" ]; then
             echo "Error: Duplicate --to option." >&2
             exit 1
           fi
-          if [ $# -lt 2 ] || ! validate_ymd "$2"; then
-            echo "Error: --to requires a valid YYYY-MM-DD date." >&2
+          if [ $# -lt 2 ]; then
+            echo "Error: --to requires a valid YYYY-MM-DD[ HH:MM] date/datetime." >&2
+            exit 1
+          fi
+          _raw_to="$2"
+          _shift_n=2
+          _re_ymd='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          _re_hm='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          if [[ "$_raw_to" =~ $_re_ymd ]] && [ $# -ge 3 ] && [[ "$3" =~ $_re_hm ]]; then
+            _raw_to="$2 $3"
+            _shift_n=3
+          fi
+          if ! normalize_range_bound "$_raw_to" 1; then
+            echo "Error: --to requires a valid YYYY-MM-DD[ HH:MM] date/datetime." >&2
             exit 1
           fi
           FILTER_MODE="range"
-          FILTER_TO="$2"
-          shift 2
+          FILTER_TO_CMP="$RANGE_CMP"
+          FILTER_TO_LBL="$RANGE_LBL"
+          shift "$_shift_n"
           ;;
         -n|--limit)
           if [ "$EXPLICIT_LIMIT" -gt 0 ]; then
             echo "Error: Duplicate $1 option." >&2
             exit 1
           fi
-          if [ $# -lt 2 ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$((10#$2))" -lt 1 ]; then
+          _re_int='^[0-9]+$'
+          if [ $# -lt 2 ] || ! [[ "$2" =~ $_re_int ]] || [ "$((10#$2))" -lt 1 ]; then
             echo "Error: $1 requires an integer >= 1." >&2
             exit 1
           fi
@@ -791,9 +804,21 @@ case "${1:-}" in
     ;;
 esac
 
-if [ "$FILTER_MODE" = "range" ] && [ -n "$FILTER_FROM" ] && [ -n "$FILTER_TO" ] && [[ "$FILTER_FROM" > "$FILTER_TO" ]]; then
-  echo "Error: --from date ($FILTER_FROM) cannot be after --to date ($FILTER_TO)." >&2
+if [ "$FILTER_MODE" = "range" ] && [ -n "$FILTER_FROM_CMP" ] && [ -n "$FILTER_TO_CMP" ] && [[ "$FILTER_FROM_CMP" > "$FILTER_TO_CMP" ]]; then
+  echo "Error: --from ($FILTER_FROM_LBL) cannot be after --to ($FILTER_TO_LBL)." >&2
   exit 1
+fi
+
+if [ -n "${JENBACH_TODAY:-}" ]; then
+  if ! validate_ymd "$JENBACH_TODAY"; then
+    echo "Error: Invalid JENBACH_TODAY '${JENBACH_TODAY}'. Expected valid YYYY-MM-DD." >&2
+    exit 1
+  fi
+  TODAY_YMD="$JENBACH_TODAY"
+else
+  printf -v TODAY_YMD '%(%Y-%m-%d)T' -1 2>/dev/null || true
+  _re_ymd='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  [[ "$TODAY_YMD" =~ $_re_ymd ]] || TODAY_YMD=$(date +"%Y-%m-%d")
 fi
 
 if [ ! -d "$LOG_DIR" ]; then
@@ -815,18 +840,15 @@ if [ ${#LOG_FILES[@]} -eq 0 ]; then
 fi
 
 CFG_JSON=$(jq -c '.' "$CFG_FILE" 2>/dev/null)
-[ -z "$CFG_JSON" ] && CFG_JSON='{"short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"theme":"modern","color":"auto","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"cycle","subagent_cost_mode":"split","statusline_subagent_detail":true}'
+[ -z "$CFG_JSON" ] && CFG_JSON='{"short_tokens":true,"show_history":true,"history_limit":20,"auto_fit_height":true,"theme":"modern","color":"auto","check_app_updates":true,"app_repo_url":"https://github.com/utariddev/jenbach","default_view":"week","subagent_cost_mode":"split","statusline_subagent_detail":true}'
 LOCAL_VER=$(read_version)
 APP_UPDATE_VER=$(get_app_update_ver "$LOCAL_VER")
 
 if [ -z "$FILTER_MODE" ]; then
-  FILTER_MODE=$(printf '%s' "$CFG_JSON" | jq -r 'if (.default_view // "cycle") == "all" then "all" else "cycle" end')
+  FILTER_MODE=$(printf '%s' "$CFG_JSON" | jq -L "$LIB_DIR" -r 'include "common"; normalize_default_view(.default_view)')
 fi
 
-QUOTA_RAW=""; [ -r "$QUOTA_FILE" ] && QUOTA_RAW=$(< "$QUOTA_FILE")
 PRICES_RAW=""; [ -r "$PRICES_FILE" ] && PRICES_RAW=$(< "$PRICES_FILE")
-printf -v TODAY_YMD '%(%Y-%m-%d)T' -1 2>/dev/null || true
-[[ "$TODAY_YMD" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || TODAY_YMD=$(date +"%Y-%m-%d")
 printf -v NOW_STR '%(%Y-%m-%d %H:%M)T' -1 2>/dev/null || true
 [[ "$NOW_STR" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]] || NOW_STR=$(date +"%Y-%m-%d %H:%M")
 
@@ -838,12 +860,14 @@ fi
 SIDECAR_FILES=()
 TRANSCRIPT_FILES=()
 for f in "${LOG_FILES[@]}"; do
-  _t_sid="${f##*/}"
-  _t_sid="${_t_sid%.json}"
-  _t_path="$AGY_DIR/brain/${_t_sid}/.system_generated/logs/transcript.jsonl"
-  if [ -s "$_t_path" ] && [ -r "$_t_path" ]; then
-    if [ ! "$f" -nt "$_t_path" ] || ! grep -q '"user_prompts"[[:space:]]*:[[:space:]]*[1-9]' "$f" 2>/dev/null; then
-      TRANSCRIPT_FILES+=("$_t_path")
+  if [ "$FILTER_MODE" != "weeks" ]; then
+    _t_sid="${f##*/}"
+    _t_sid="${_t_sid%.json}"
+    _t_path="$AGY_DIR/brain/${_t_sid}/.system_generated/logs/transcript.jsonl"
+    if [ -s "$_t_path" ] && [ -r "$_t_path" ]; then
+      if [ ! "$f" -nt "$_t_path" ] || ! grep -q '"user_prompts"[[:space:]]*:[[:space:]]*[1-9]' "$f" 2>/dev/null; then
+        TRANSCRIPT_FILES+=("$_t_path")
+      fi
     fi
   fi
   if grep -q '"has_subagents"[[:space:]]*:[[:space:]]*true' "$f" 2>/dev/null; then
@@ -952,13 +976,15 @@ jq -L "$LIB_DIR" -r -s \
   --argjson explicit_limit "$EXPLICIT_LIMIT" \
   --arg is_tty "$IS_TTY" \
   --arg no_color "${NO_COLOR:-}" \
-  --arg quota_raw "$QUOTA_RAW" \
   --arg prices_raw "$PRICES_RAW" \
   --arg filter_mode "$FILTER_MODE" \
-  --arg cycle_bucket "$CYCLE_BUCKET" \
+  --argjson week_offset "$WEEK_OFFSET" \
+  --argjson month_offset "$MONTH_OFFSET" \
   --arg filter_month "$FILTER_MONTH" \
-  --arg filter_from "$FILTER_FROM" \
-  --arg filter_to "$FILTER_TO" \
+  --arg from_cmp "$FILTER_FROM_CMP" \
+  --arg from_lbl "$FILTER_FROM_LBL" \
+  --arg to_cmp "$FILTER_TO_CMP" \
+  --arg to_lbl "$FILTER_TO_LBL" \
   --arg today_ymd "$TODAY_YMD" \
   --arg local_ver "$LOCAL_VER" \
   --arg app_update_ver "$APP_UPDATE_VER" '
@@ -976,24 +1002,20 @@ jq -L "$LIB_DIR" -r -s \
 
   def norm_model(m):
     (m // "Unknown" | tostring | if . == "" then "Unknown" else . end);
-  def effective_cycle_start($qbuckets; $b):
-    if ($qbuckets | has($b)) and (($qbuckets[$b] | type) == "object") then
-      ($qbuckets[$b].cycle_started_at // "" | tostring)
-    elif ($qbuckets | has("gemini-weekly")) and (($qbuckets["gemini-weekly"] | type) == "object") then
-      ($qbuckets["gemini-weekly"].cycle_started_at // "" | tostring)
-    else "" end;
   def table_min_w($headers; $rows):
     ($headers | length) as $nc |
     ([range(0; $nc) as $i | ([$headers[$i] | length] + [$rows[] | (.cells[$i].t // "" | length)] | max)] | add) + (2 * ($nc - 1));
 
-  ($quota_raw | try fromjson catch {} | if type == "object" then . else {} end) as $qstate |
-  sanitize_quota_buckets($qstate.buckets) as $qbuckets |
   ($prices_raw | try fromjson catch null |
     if (type == "object") and ((.updated_at | type) == "string") and (.updated_at | test("\\A[0-9A-Za-z._:-]{1,20}\\z")) then
       .updated_at
     else "N/A" end
   ) as $prices_upd |
-  ((($today_ymd + "T12:00:00Z") | fromdateiso8601) - (6 * 86400) | strftime("%Y-%m-%d")) as $week_start |
+  week_monday($today_ymd) as $this_mon_ep |
+  (if $this_mon_ep != null then ($this_mon_ep - ($week_offset * 7 * 86400)) else null end) as $target_mon_ep |
+  (if $target_mon_ep != null and $target_mon_ep >= 0 then ($target_mon_ep | strftime("%Y-%m-%d")) else "" end) as $week_start |
+  (if $target_mon_ep != null and $target_mon_ep >= 0 then (($target_mon_ep + (6 * 86400)) | strftime("%Y-%m-%d")) else "" end) as $week_end |
+  (if $filter_month != "" then $filter_month else (month_offset_ym($today_ymd; $month_offset) // "") end) as $target_month |
 
   map(
     (.cost_usd // 0) as $orig_cost |
@@ -1032,34 +1054,118 @@ jq -L "$LIB_DIR" -r -s \
     . + {display_children: $display_children, user_prompts: ([(.user_prompts | if type == "number" then . else 0 end), ($prompt_counts[(.session_id // "" | tostring)] // 0)] | max)}
   ) |
 
+  if $filter_mode == "weeks" then
+    [ .[] | . + {mon_ep: week_monday((.timestamp // "" | tostring)[0:10])} | select(.mon_ep != null and .mon_ep >= 0) ] as $valid_w |
+    if ($valid_w | length) == 0 then
+      "No sessions with valid timestamps found."
+    else
+      ($valid_w | group_by(.mon_ep) | sort_by(.[0].mon_ep) | reverse) as $all_weeks |
+      ($all_weeks | length) as $total_weeks |
+      (if $explicit_limit > 0 then $explicit_limit else 20 end) as $max_weeks |
+      ($all_weeks[0:$max_weeks]) as $shown_weeks |
+      ($shown_weeks | length) as $shown_count |
+      [ $shown_weeks[] |
+        . as $grp |
+        ($grp[0].mon_ep) as $mon_ep |
+        (if $this_mon_ep != null then (($this_mon_ep - $mon_ep) / (7 * 86400) | round) else -1 end) as $off |
+        (if $off >= 0 then "\($off)" else "-" end) as $off_str |
+        "\($mon_ep | strftime("%Y-%m-%d")) - \((($mon_ep + 6 * 86400)) | strftime("%Y-%m-%d"))" as $range |
+        ($grp | length) as $sess |
+        ($grp | map((.uncached_tokens // .input_tokens // 0) + ((.display_children // []) | map(.uncached_tokens // 0) | add // 0)) | add // 0) as $u_in |
+        ($grp | map((.cache_tokens // 0) + ((.display_children // []) | map(.cache_tokens // 0) | add // 0)) | add // 0) as $c_in |
+        ($grp | map((.output_tokens // 0) + ((.display_children // []) | map(.output_tokens // 0) | add // 0)) | add // 0) as $o_tok |
+        (if ($u_in + $c_in) > 0 then (($c_in * 100 / ($u_in + $c_in)) | floor) else 0 end) as $hit |
+        ($grp | map((.main_cost_usd // 0) + (.subagent_cost_usd // 0)) | add // 0) as $cost |
+        {
+          sess: $sess, u: $u_in, c: $c_in, o: $o_tok, cost: $cost,
+          row: {
+            sep_before: false,
+            bold_row: false,
+            cells: [
+              {t: $off_str, c: "dim"},
+              {t: $range, c: "bold_white"},
+              {t: ($sess | tostring), c: ""},
+              {t: fmt_tok($u_in; $short), c: ""},
+              {t: fmt_tok($c_in; $short), c: ""},
+              {t: "\($hit)%", c: hit_color($hit)},
+              {t: fmt_tok($o_tok; $short), c: ""},
+              {t: fmt_usd3($cost), c: "bold_yellow"}
+            ]
+          }
+        }
+      ] as $wk_items |
+      ($wk_items | map(.sess) | add // 0) as $tot_sess |
+      ($wk_items | map(.u) | add // 0) as $tot_u |
+      ($wk_items | map(.c) | add // 0) as $tot_c |
+      ($wk_items | map(.o) | add // 0) as $tot_o |
+      ($wk_items | map(.cost) | add // 0) as $tot_cost |
+      (if ($tot_u + $tot_c) > 0 then (($tot_c * 100 / ($tot_u + $tot_c)) | floor) else 0 end) as $tot_hit |
+      (
+        ($wk_items | map(.row)) + [{
+          sep_before: true,
+          bold_row: false,
+          cells: [
+            {t: "", c: ""},
+            {t: "GRAND TOTAL", c: "bold_white"},
+            {t: ($tot_sess | tostring), c: ""},
+            {t: fmt_tok($tot_u; $short), c: ""},
+            {t: fmt_tok($tot_c; $short), c: ""},
+            {t: "\($tot_hit)%", c: hit_color($tot_hit)},
+            {t: fmt_tok($tot_o; $short), c: ""},
+            {t: fmt_usd3($tot_cost), c: "bold_yellow"}
+          ]
+        }]
+      ) as $w_rows |
+      ["#", "Week (Mon - Sun)", "Sess", "Uncached", "Cached", "Hit%", "Output", "Total"] as $w_headers |
+      ["r", "l", "r", "r", "r", "r", "r", "r"] as $w_aligns |
+      table_min_w($w_headers; $w_rows) as $w_min |
+      (if $term_cols >= 85 then ([$w_min, ([($term_cols - 12), 104] | min)] | max) else 0 end) as $target_w |
+      paint((if $shown_count < $total_weeks then "WEEKLY USAGE (SHOWING \($shown_count) OF \($total_weeks))" else "WEEKLY USAGE" end); "bold_cyan"; $use_color),
+      render_table($w_headers; $w_aligns; $w_rows; $plain; $use_color; $target_w),
+      (if $shown_count < $total_weeks then
+         paint("Showing \($shown_count) of \($total_weeks) weeks. Run \u0027jenbach weeks -n \($total_weeks)\u0027 to view all."; "dim"; $use_color)
+       else empty end),
+      paint("Run \u0027jenbach week <#>\u0027 to inspect a week."; "dim"; $use_color)
+    end
+  else
+
   (
     if $filter_mode == "all" then .
     elif $filter_mode == "today" then
       map(select((.timestamp // "" | tostring)[0:10] == $today_ymd))
     elif $filter_mode == "week" then
-      map(select(((.timestamp // "" | tostring)[0:10]) as $d | $d >= $week_start and $d <= $today_ymd))
-    elif $filter_mode == "month" then
-      map(select((.timestamp // "" | tostring)[0:7] == $filter_month))
-    elif $filter_mode == "range" then
-      map(select(((.timestamp // "" | tostring)[0:10]) as $d | $d != "" and ($filter_from == "" or $d >= $filter_from) and ($filter_to == "" or $d <= $filter_to)))
-    else
-      if $cycle_bucket != "" then
-        effective_cycle_start($qbuckets; $cycle_bucket) as $cs |
-        map(select(model_quota_bucket(.model) == $cycle_bucket and ($cs == "" or (.timestamp // "" | tostring) >= $cs)))
+      if $week_start == "" then []
       else
-        map(select(effective_cycle_start($qbuckets; model_quota_bucket(.model)) as $cs | ($cs == "" or (.timestamp // "" | tostring) >= $cs)))
+        map(select(((.timestamp // "" | tostring)[0:10]) as $d | ($d | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and $d >= $week_start and $d <= $week_end))
       end
+    elif $filter_mode == "month" then
+      if $target_month == "" then []
+      else
+        map(select((.timestamp // "" | tostring)[0:7] == $target_month))
+      end
+    elif $filter_mode == "range" then
+      map(select(
+        (
+          (.timestamp // "" | tostring) |
+          if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") then . + " 00:00"
+          elif test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}") then .[0:10] + " " + .[11:16]
+          else "" end
+        ) as $ts |
+        $ts != "" and ($from_cmp == "" or $ts >= $from_cmp) and ($to_cmp == "" or $ts <= $to_cmp)
+      ))
+    else .
     end
   ) as $sessions |
 
   (
     if $filter_mode == "all" then "all"
     elif $filter_mode == "today" then "today (\($today_ymd))"
-    elif $filter_mode == "week" then "week (\($week_start)..\($today_ymd))"
-    elif $filter_mode == "month" then "month \($filter_month)"
-    elif $filter_mode == "range" then "range \(if $filter_from == "" then "*" else $filter_from end)..\(if $filter_to == "" then "*" else $filter_to end)"
-    elif $cycle_bucket != "" then "cycle: \($cycle_bucket)"
-    else "cycle"
+    elif $filter_mode == "week" then
+      if $week_offset > 0 then "week #\($week_offset) (\($week_start)..\($week_end))"
+      else "week (\($week_start)..\($week_end))" end
+    elif $filter_mode == "month" then "month \($target_month)"
+    elif $filter_mode == "range" then "range \(if $from_lbl == "" then "*" else $from_lbl end)..\(if $to_lbl == "" then "*" else $to_lbl end)"
+    else "all"
     end
   ) as $filter_label |
 
@@ -1335,5 +1441,6 @@ jq -L "$LIB_DIR" -r -s \
          paint("Update available: v\($local_ver) \(if $plain then "->" else "→" end) v\($app_update_ver) \(if $plain then "-" else "—" end) run \u0027jenbach update\u0027"; "bold_cyan"; $use_color)
        else empty end)
     )
+  end
   end
 ' "${LOG_FILES[@]}"

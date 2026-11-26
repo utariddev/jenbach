@@ -111,6 +111,28 @@ assert_eq "model_quota_bucket neon" "gemini-weekly" "$(jq -L "$LIB_DIR" -rn 'inc
 assert_eq "model_quota_bucket 3p" "3p-weekly" "$(jq -L "$LIB_DIR" -rn 'include "common"; model_quota_bucket("Claude Sonnet 4.5")')"
 assert_eq "model_quota_bucket null" "3p-weekly" "$(jq -L "$LIB_DIR" -rn 'include "common"; model_quota_bucket(null)')"
 
+assert_eq "normalize_default_view week" "week" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view("week")')"
+assert_eq "normalize_default_view today" "today" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view("today")')"
+assert_eq "normalize_default_view month" "month" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view("month")')"
+assert_eq "normalize_default_view all" "all" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view("all")')"
+assert_eq "normalize_default_view cycle->week" "week" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view("cycle")')"
+assert_eq "normalize_default_view null->week" "week" "$(jq -L "$LIB_DIR" -rn 'include "common"; normalize_default_view(null)')"
+
+assert_eq "week_monday Mon" "2025-12-29" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("2025-12-29") | strftime("%Y-%m-%d")')"
+assert_eq "week_monday Thu year boundary" "2025-12-29" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("2026-01-01") | strftime("%Y-%m-%d")')"
+assert_eq "week_monday Sun" "2025-12-29" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("2026-01-04") | strftime("%Y-%m-%d")')"
+assert_eq "week_monday leap day" "2024-02-26" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("2024-02-29") | strftime("%Y-%m-%d")')"
+assert_eq "week_monday invalid 2026-02-30" "null" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("2026-02-30")')"
+assert_eq "week_monday non-date N/A" "null" "$(jq -L "$LIB_DIR" -rn 'include "common"; week_monday("N/A")')"
+
+assert_eq "month_offset_ym 0" "2026-01" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("2026-01-01"; 0)')"
+assert_eq "month_offset_ym 1 rollover" "2025-12" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("2026-01-01"; 1)')"
+assert_eq "month_offset_ym 12" "2025-01" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("2026-01-01"; 12)')"
+assert_eq "month_offset_ym 13" "2024-12" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("2026-01-01"; 13)')"
+assert_eq "month_offset_ym pre-0000" "null" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("0000-01-01"; 1)')"
+assert_eq "month_offset_ym invalid date" "null" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("bad"; 0)')"
+assert_eq "month_offset_ym negative offset" "null" "$(jq -L "$LIB_DIR" -rn 'include "common"; month_offset_ym("2026-01-01"; -1)')"
+
 assert_eq "subagent_spinner(0, false)" "⠋" "$(jq -L "$LIB_DIR" -rn 'include "common"; subagent_spinner(0; false)')"
 assert_eq "subagent_spinner(7, false)" "⠧" "$(jq -L "$LIB_DIR" -rn 'include "common"; subagent_spinner(7; false)')"
 assert_eq "subagent_spinner(8, false)" "⠋" "$(jq -L "$LIB_DIR" -rn 'include "common"; subagent_spinner(8; false)')"
@@ -133,7 +155,7 @@ assert_eq "config theme migrated" "modern" "$(jq -r '.theme' "$JB_DIR/report_con
 assert_eq "config color migrated" "auto" "$(jq -r '.color' "$JB_DIR/report_config.json")"
 assert_eq "config auto_update_prices migrated" "true" "$(jq -r '.auto_update_prices' "$JB_DIR/report_config.json")"
 assert_eq "config check_app_updates migrated" "true" "$(jq -r '.check_app_updates' "$JB_DIR/report_config.json")"
-assert_eq "config default_view migrated" "cycle" "$(jq -r '.default_view' "$JB_DIR/report_config.json")"
+assert_eq "config default_view migrated" "week" "$(jq -r '.default_view' "$JB_DIR/report_config.json")"
 assert_eq "config subagent_cost_mode migrated" "split" "$(jq -r '.subagent_cost_mode' "$JB_DIR/report_config.json")"
 assert_eq "config statusline_subagent_detail migrated" "true" "$(jq -r '.statusline_subagent_detail' "$JB_DIR/report_config.json")"
 
@@ -757,270 +779,198 @@ assert_eq "plain info zero ESC" "0" "$(printf '%s' "$INFO_PLN" | grep -c $'\x1b'
 assert_eq "plain info pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$INFO_PLN") || true)"
 "$JB_DIR/report.sh" set theme modern >/dev/null
 
-# 6a. Quota cycle tracking in statusline.sh
-rm -f "$JB_DIR/quota_cycles.json" "$JB_DIR/usage_logs"/*.json
-EMPTY_CYCLES=$("$JB_DIR/report.sh" cycles)
-assert_contains "empty cycles message" "No weekly quota cycles tracked yet" "$EMPTY_CYCLES"
-
-Q_INIT='{"session_id":"q1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.80,"reset_time":"2026-11-28T00:00:00Z"},"3p-weekly":{"remaining_fraction":0.90,"reset_time":"2026-11-28T00:00:00Z"},"gemini-5h":{"remaining_fraction":0.50,"reset_time":"2026-11-21T20:00:00Z"},"disabled-weekly":{"remaining_fraction":1.0,"disabled":true}}}'
-printf '%s' "$Q_INIT" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "quota_cycles.json created" "true" "$([ -f "$JB_DIR/quota_cycles.json" ] && echo true || echo false)"
-assert_eq "initial cycle_started_at is empty" "" "$(jq -r '.buckets["gemini-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")"
-assert_eq "5h bucket ignored" "false" "$(jq -r '.buckets | has("gemini-5h")' "$JB_DIR/quota_cycles.json")"
-assert_eq "disabled bucket ignored" "false" "$(jq -r '.buckets | has("disabled-weekly")' "$JB_DIR/quota_cycles.json")"
-
-# Model switch without reset_time change and small drop does not trigger reset
-Q_SWITCH='{"session_id":"q1","model":{"display_name":"Claude Sonnet 4.5"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.78,"reset_time":"2026-11-28T00:00:00Z"},"3p-weekly":{"remaining_fraction":0.90,"reset_time":"2026-11-28T00:00:00Z"}}}'
-printf '%s' "$Q_SWITCH" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "no false reset on model switch" "0" "$(jq -r '.buckets["gemini-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-
-# Cycles command before any resets exist
-CYCLES_UNTRACKED=$("$JB_DIR/report.sh" cycles)
-assert_contains "cycles shows All recorded before reset" "All recorded" "$CYCLES_UNTRACKED"
-assert_contains "cycles shows readable Gemini bucket" "Gemini (Weekly)" "$CYCLES_UNTRACKED"
-assert_contains "cycles shows readable 3P bucket" "Claude / 3P (Weekly)" "$CYCLES_UNTRACKED"
-assert_contains "cycles shows no resets yet" "No quota resets detected yet." "$CYCLES_UNTRACKED"
-
-# Scheduled reset: reset_time shifts forward
-Q_RESET_TIME='{"session_id":"q1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-12-05T00:00:00Z"},"3p-weekly":{"remaining_fraction":0.90,"reset_time":"2026-11-28T00:00:00Z"}}}'
-printf '%s' "$Q_RESET_TIME" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "reset_time_changed detected" "reset_time_changed" "$(jq -r '.buckets["gemini-weekly"].resets[0].reason' "$JB_DIR/quota_cycles.json")"
-assert_eq "cycle_started_at populated on reset" "true" "$([ -n "$(jq -r '.buckets["gemini-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")" ] && echo true || echo false)"
-assert_eq "3p-weekly isolated from gemini reset" "" "$(jq -r '.buckets["3p-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")"
-
-# Surprise reset: remaining_fraction jumps >= +0.05 without reset_time change
-Q_JUMP='{"session_id":"q1","model":{"display_name":"Claude Sonnet 4.5"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-12-05T00:00:00Z"},"3p-weekly":{"remaining_fraction":0.98,"reset_time":"2026-11-28T00:00:00Z"}}}'
-printf '%s' "$Q_JUMP" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "remaining_jump detected on 3p" "remaining_jump" "$(jq -r '.buckets["3p-weekly"].resets[0].reason' "$JB_DIR/quota_cycles.json")"
-
-CYCLES_OUT=$("$JB_DIR/report.sh" cycles)
-assert_contains "cycles shows WEEKLY QUOTA CYCLES" "WEEKLY QUOTA CYCLES" "$CYCLES_OUT"
-assert_contains "cycles shows RECENT DETECTED RESETS" "RECENT DETECTED RESETS" "$CYCLES_OUT"
-assert_contains "cycles shows Scheduled reset" "Scheduled reset" "$CYCLES_OUT"
-assert_contains "cycles shows Quota jump" "Quota jump" "$CYCLES_OUT"
-assert_contains "cycles formats UTC timestamp" "2026-12-05 00:00" "$CYCLES_OUT"
-assert_contains "cycles shows Gemini (Weekly)" "Gemini (Weekly)" "$CYCLES_OUT"
-assert_contains "cycles shows Claude / 3P (Weekly)" "Claude / 3P (Weekly)" "$CYCLES_OUT"
-
-# Quota edge cases: malformed quota_cycles.json, invalid remaining_fraction, and 50-entry cap
-printf 'not json\n' > "$JB_DIR/quota_cycles.json"
-Q_BAD_FRAC='{"session_id":"q1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.75,"reset_time":"2026-11-28T00:00:00Z"},"bad-neg-weekly":{"remaining_fraction":-0.1},"bad-over-weekly":{"remaining_fraction":1.5},"bad-str-weekly":{"remaining_fraction":"nope"}}}'
-printf '%s' "$Q_BAD_FRAC" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "malformed quota_cycles.json recovered" "0.75" "$(jq -r '.buckets["gemini-weekly"].last_remaining' "$JB_DIR/quota_cycles.json")"
-assert_eq "negative remaining_fraction ignored" "false" "$(jq -r '.buckets | has("bad-neg-weekly")' "$JB_DIR/quota_cycles.json")"
-assert_eq ">1 remaining_fraction ignored" "false" "$(jq -r '.buckets | has("bad-over-weekly")' "$JB_DIR/quota_cycles.json")"
-assert_eq "non-number remaining_fraction ignored" "false" "$(jq -r '.buckets | has("bad-str-weekly")' "$JB_DIR/quota_cycles.json")"
-
-jq -n '{buckets:{"gemini-weekly":{last_remaining:0.5,last_reset_time:"2026-11-28T00:00:00Z",cycle_started_at:"2026-11-01 00:00",resets:[range(0;50)|{detected_at:"2026-11-01 00:00",reason:"reset_time_changed",prev_remaining:0.5,new_remaining:1.0,reset_time:"2026-11-28T00:00:00Z"}]}}}' > "$JB_DIR/quota_cycles.json"
-printf '%s' "$Q_RESET_TIME" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "resets array capped at 50" "50" "$(jq -r '.buckets["gemini-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-assert_eq "newest reset kept at tail" "2026-12-05T00:00:00Z" "$(jq -r '.buckets["gemini-weekly"].resets[-1].reset_time' "$JB_DIR/quota_cycles.json")"
-
-# 6b. Mixed-bucket cycle isolation & date filter tests
+# 6a. Calendar week/month/weeks/range filtering & JENBACH_TODAY tests
 rm -f "$JB_DIR/usage_logs"/*.json
-cat << 'JSON' > "$JB_DIR/quota_cycles.json"
-{
-  "buckets": {
-    "gemini-weekly": {
-      "last_remaining": 0.9,
-      "last_reset_time": "2026-12-05T00:00:00Z",
-      "cycle_started_at": "2026-11-20 10:00",
-      "resets": []
-    },
-    "3p-weekly": {
-      "last_remaining": 0.7,
-      "last_reset_time": "2026-11-28T00:00:00Z",
-      "cycle_started_at": "",
-      "resets": []
-    }
-  }
-}
-JSON
 
-TODAY_D=$(date +"%Y-%m-%d")
-cat << JSON > "$JB_DIR/usage_logs/s_gem_old.json"
-{"timestamp":"2026-11-19 09:00","session_id":"s_gem_old","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":1.0}
-JSON
-cat << JSON > "$JB_DIR/usage_logs/s_gem_new.json"
-{"timestamp":"2026-11-20 12:00","session_id":"s_gem_new","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":2.0}
-JSON
-cat << JSON > "$JB_DIR/usage_logs/s_3p_old.json"
-{"timestamp":"2026-11-19 09:00","session_id":"s_3p_old","model":"Claude Sonnet 4.5","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":4.0}
-JSON
-cat << JSON > "$JB_DIR/usage_logs/s_arg_old.json"
-{"timestamp":"2026-11-19 09:00","session_id":"s_arg_old","model":"Gemini 3.8 Argon","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":8.0}
-JSON
-cat << JSON > "$JB_DIR/usage_logs/s_today.json"
-{"timestamp":"$TODAY_D 08:00","session_id":"s_today","model":"Neon","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":0.5}
-JSON
-cat << JSON > "$JB_DIR/usage_logs/s_old_week.json"
-{"timestamp":"2020-01-01 09:00","session_id":"s_old_week","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":0.25}
-JSON
-
-# Default view is cycle: should include s_gem_new ($2.0), s_3p_old ($4.0), s_today ($0.5) if today >= 2026-11-20; exclude s_gem_old ($1.0) and s_arg_old ($8.0)
-REP_CYCLE=$("$JB_DIR/report.sh" cycle)
-assert_contains "cycle includes s_gem_new" "s_gem_ne" "$REP_CYCLE"
-assert_not_contains "cycle excludes s_gem_old" "s_gem_ol" "$REP_CYCLE"
-assert_contains "cycle preserves un-reset 3p-weekly s_3p_old" "s_3p_old" "$REP_CYCLE"
-assert_not_contains "cycle falls back absent argon to gemini-weekly" "s_arg_ol" "$REP_CYCLE"
-
-REP_CYCLE_3P=$("$JB_DIR/report.sh" cycle 3p)
-assert_contains "cycle 3p includes Claude" "Claude Sonnet 4.5" "$REP_CYCLE_3P"
-assert_not_contains "cycle 3p excludes Gemini" "Gemini 3.8 Flash" "$REP_CYCLE_3P"
-
-REP_CYCLE_GEM=$("$JB_DIR/report.sh" cycle gemini)
-assert_contains "cycle gemini includes Gemini" "Gemini 3.8 Flash" "$REP_CYCLE_GEM"
-assert_not_contains "cycle gemini excludes Claude" "Claude Sonnet 4.5" "$REP_CYCLE_GEM"
-
-REP_CYCLE_ARG=$("$JB_DIR/report.sh" cycle argon)
-assert_contains "cycle argon empty message" "No sessions match filter" "$REP_CYCLE_ARG"
-
-REP_ALL=$("$JB_DIR/report.sh" all)
-assert_contains "all includes s_gem_old" "s_gem_ol" "$REP_ALL"
-assert_contains "all includes s_arg_old" "s_arg_ol" "$REP_ALL"
-
-REP_TODAY=$("$JB_DIR/report.sh" today)
-assert_contains "today includes s_today" "s_today" "$REP_TODAY"
-assert_not_contains "today excludes 2026-11-19" "s_gem_ol" "$REP_TODAY"
-
-REP_WEEK=$("$JB_DIR/report.sh" week)
-assert_contains "week includes s_today" "s_today" "$REP_WEEK"
-assert_not_contains "week excludes old 2020-01-01" "s_old_we" "$REP_WEEK"
-
-REP_MONTH=$("$JB_DIR/report.sh" --month 2026-11)
-assert_contains "month 2026-11 includes s_gem_old" "s_gem_ol" "$REP_MONTH"
-
-REP_RANGE=$("$JB_DIR/report.sh" --from 2026-11-20 --to 2026-11-20)
-assert_contains "range includes s_gem_new" "s_gem_ne" "$REP_RANGE"
-assert_not_contains "range excludes s_gem_old" "s_gem_ol" "$REP_RANGE"
-
-REP_FROM_ONLY=$("$JB_DIR/report.sh" --from 2026-11-20)
-assert_contains "open-ended --from includes s_gem_new" "s_gem_ne" "$REP_FROM_ONLY"
-assert_not_contains "open-ended --from excludes s_gem_old" "s_gem_ol" "$REP_FROM_ONLY"
-
-REP_TO_ONLY=$("$JB_DIR/report.sh" --to 2026-11-19)
-assert_contains "open-ended --to includes s_gem_old" "s_gem_ol" "$REP_TO_ONLY"
-assert_not_contains "open-ended --to excludes s_gem_new" "s_gem_ne" "$REP_TO_ONLY"
-
-# default-view setting toggle
-"$JB_DIR/report.sh" set default-view all >/dev/null
-REP_DEF_ALL=$("$JB_DIR/report.sh")
-assert_contains "default-view all includes s_gem_old" "s_gem_ol" "$REP_DEF_ALL"
-"$JB_DIR/report.sh" set default-view cycle >/dev/null
-
-# Invalid / conflicting filter flags exit 1
-for bad_flt in "today week" "--month" "--from" "--to" "--month 2026-13" "--from 2026-02-30" "--from 2026-11-20 --to 2026-11-19" "--from 2026-11-01 --from 2026-11-02" "--to 2026-11-01 --to 2026-11-02" "--month 2026-11 --from 2026-11-01" "cycle --month 2026-11" "cycle bogus" "set default-view bogus"; do
-  if $JB_DIR/report.sh $bad_flt >/dev/null 2>&1; then
-    echo "FAIL: '$bad_flt' should exit 1" >&2
+# Invalid JENBACH_TODAY fails fast even with empty usage_logs
+for bad_today in "bogus" "2026-02-30" "2026-02-29"; do
+  if JENBACH_TODAY="$bad_today" "$JB_DIR/report.sh" week >/dev/null 2>&1; then
+    echo "FAIL: JENBACH_TODAY='$bad_today' should exit 1" >&2
     FAIL=$((FAIL + 1))
   else
     PASS=$((PASS + 1))
   fi
 done
 
-# 6c. Regression tests: sliding 100% reset_time, stale out-of-order reset_time, and bogus reset self-healing
-rm -f "$JB_DIR/quota_cycles.json"
-Q_SLIDE_1='{"session_id":"qs1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:31:31Z"},"gemini-argon-wtu-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:31:31Z"}}}'
-Q_SLIDE_2='{"session_id":"qs1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:31:32Z"},"gemini-argon-wtu-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:37:59Z"}}}'
-Q_SLIDE_3='{"session_id":"qs1","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:38:00.123456Z"},"gemini-argon-wtu-weekly":{"remaining_fraction":1.0,"reset_time":"2026-12-06T00:00:00Z"}}}'
-printf '%s' "$Q_SLIDE_1" | "$JB_DIR/statusline.sh" >/dev/null
-printf '%s' "$Q_SLIDE_2" | "$JB_DIR/statusline.sh" >/dev/null
-printf '%s' "$Q_SLIDE_3" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "sliding 100% gemini produces 0 resets" "0" "$(jq -r '.buckets["gemini-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-assert_eq "sliding 100% gemini keeps cycle_started_at empty" "" "$(jq -r '.buckets["gemini-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")"
-assert_eq "sliding 100% argon (>6h) produces 0 resets" "0" "$(jq -r '.buckets["gemini-argon-wtu-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-assert_eq "sliding 100% argon (>6h) updates last_reset_time" "2026-12-06T00:00:00Z" "$(jq -r '.buckets["gemini-argon-wtu-weekly"].last_reset_time' "$JB_DIR/quota_cycles.json")"
-
-# Missing reset_time in payload preserves existing last_reset_time; empty prev_rt gets populated
-Q_NO_RT='{"session_id":"qs1b","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.95},"custom-weekly":{"remaining_fraction":0.85}}}'
-printf '%s' "$Q_NO_RT" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "missing reset_time preserves last_reset_time" "2026-11-28T16:31:31Z" "$(jq -r '.buckets["gemini-weekly"].last_reset_time' "$JB_DIR/quota_cycles.json")"
-
-Q_FILL_RT='{"session_id":"qs1b","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"custom-weekly":{"remaining_fraction":0.85,"reset_time":"2026-11-28T17:00:00Z"}}}'
-printf '%s' "$Q_FILL_RT" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "empty prev_rt gets populated" "2026-11-28T17:00:00Z" "$(jq -r '.buckets["custom-weekly"].last_reset_time' "$JB_DIR/quota_cycles.json")"
-
-# Minor reset_time drift >= 60s (< 6h) while < 99.5% updates last_reset_time without logging reset
-Q_DRIFT='{"session_id":"qs1b","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"custom-weekly":{"remaining_fraction":0.85,"reset_time":"2026-11-28T17:05:00Z"}}}'
-printf '%s' "$Q_DRIFT" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "minor drift >= 60s updates last_reset_time" "2026-11-28T17:05:00Z" "$(jq -r '.buckets["custom-weekly"].last_reset_time' "$JB_DIR/quota_cycles.json")"
-assert_eq "minor drift >= 60s does not log reset" "0" "$(jq -r '.buckets["custom-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-
-# Stale out-of-order reset_time must not rewind last_reset_time
-Q_USED_1='{"session_id":"qs2","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.80,"reset_time":"2026-11-28T16:37:59Z"}}}'
-Q_USED_STALE='{"session_id":"qs2","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.80,"reset_time":"2026-11-28T16:31:32Z"}}}'
-printf '%s' "$Q_USED_1" | "$JB_DIR/statusline.sh" >/dev/null
-printf '%s' "$Q_USED_STALE" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "stale reset_time does not rewind last_reset_time" "2026-11-28T16:37:59Z" "$(jq -r '.buckets["gemini-weekly"].last_reset_time' "$JB_DIR/quota_cycles.json")"
-assert_eq "stale reset_time does not trigger reset" "0" "$(jq -r '.buckets["gemini-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-
-# Unused bucket recovery: 0.992 -> 1.0 (< 6h advance) updates last_remaining to 1.0
-Q_REC_1='{"session_id":"qs3","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":0.992,"reset_time":"2026-11-28T16:40:00Z"}}}'
-Q_REC_2='{"session_id":"qs3","model":{"display_name":"Gemini 3.8 Flash"},"context_window":{"total_input_tokens":500,"total_output_tokens":100,"used_percentage":5},"cost":{"total_usd":0.01},"quota":{"gemini-weekly":{"remaining_fraction":1.0,"reset_time":"2026-11-28T16:50:00Z"}}}'
-printf '%s' "$Q_REC_1" | "$JB_DIR/statusline.sh" >/dev/null
-printf '%s' "$Q_REC_2" | "$JB_DIR/statusline.sh" >/dev/null
-assert_eq "0.992 -> 1.0 recovery updates last_remaining" "1.0" "$(jq -r '.buckets["gemini-weekly"].last_remaining' "$JB_DIR/quota_cycles.json")"
-
-# Pre-seeded bogus 100% -> 100% resets self-heal upon running jenbach cycles
-cat << 'JSON' > "$JB_DIR/quota_cycles.json"
-{
-  "buckets": {
-    "gemini-weekly": {
-      "last_remaining": 1.0,
-      "last_reset_time": "2026-11-28T16:37:59Z",
-      "cycle_started_at": "2026-11-21 16:37",
-      "resets": [
-        {"detected_at":"2026-11-21 16:31","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-11-28T16:31:32Z"},
-        {"detected_at":"2026-11-21 16:32","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-11-28T16:32:00Z"},
-        {"detected_at":"2026-11-21 16:33","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-11-28T16:33:00Z"},
-        {"detected_at":"2026-11-21 16:34","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-11-28T16:34:00Z"},
-        {"detected_at":"2026-11-21 16:37","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-11-28T16:37:59Z"}
-      ]
-    },
-    "gemini-argon-wtu-weekly": {
-      "last_remaining": 1.0,
-      "last_reset_time": "2026-12-05T00:00:00Z",
-      "cycle_started_at": "2026-11-21 16:37",
-      "resets": [
-        {"detected_at":"2026-11-21 12:00","reason":"reset_time_changed","prev_remaining":0.85,"new_remaining":1.0,"reset_time":"2026-12-05T00:00:00Z"},
-        {"detected_at":"2026-11-21 16:37","reason":"reset_time_changed","prev_remaining":1.0,"new_remaining":1.0,"reset_time":"2026-12-05T00:01:00Z"}
-      ]
-    }
-  }
-}
+# Seed sessions across year boundary, gap weeks, future week, subagent residual, and HH:MM ranges
+cat << 'JSON' > "$JB_DIR/usage_logs/s_w0_mon.json"
+{"timestamp":"2025-12-29 09:00","session_id":"s_w0_mon","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"main_cost_usd":1.000,"subagent_cost_usd":0.0004,"cost_usd":1.0004,"has_subagents":true,"subagent_records":[]}
 JSON
-HEALED_CYCLES=$("$JB_DIR/report.sh" cycles)
-assert_contains "healed cycles shows Gemini (Weekly)" "Gemini (Weekly)" "$HEALED_CYCLES"
-assert_contains "healed cycles shows Gemini Argon (Weekly)" "Gemini Argon (Weekly)" "$HEALED_CYCLES"
-assert_contains "healed cycles shows All recorded for gemini" "All recorded" "$HEALED_CYCLES"
-assert_contains "healed cycles shows Scheduled reset for argon" "Scheduled reset" "$HEALED_CYCLES"
-assert_contains "healed cycles formats argon reset UTC" "2026-12-05 00:00" "$HEALED_CYCLES"
-assert_eq "healed quota_cycles.json strips all 5 bogus gemini resets" "0" "$(jq -r '.buckets["gemini-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-assert_eq "healed quota_cycles.json clears gemini cycle_started_at" "" "$(jq -r '.buckets["gemini-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")"
-assert_eq "healed quota_cycles.json keeps 1 genuine argon reset" "1" "$(jq -r '.buckets["gemini-argon-wtu-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
-assert_eq "healed quota_cycles.json restores argon cycle_started_at" "2026-11-21 12:00" "$(jq -r '.buckets["gemini-argon-wtu-weekly"].cycle_started_at' "$JB_DIR/quota_cycles.json")"
-assert_eq "healed quota_cycles.json preserves raw bucket keys" "true" "$(jq -r '.buckets | has("gemini-weekly") and has("gemini-argon-wtu-weekly")' "$JB_DIR/quota_cycles.json")"
-
-# Fallback & malformed bucket handling in common.jq / report.sh cycles
-cat << 'JSON' > "$JB_DIR/quota_cycles.json"
-{
-  "buckets": {
-    "bogus-non-obj": "bad",
-    "custom-weekly": {
-      "last_remaining": 0.5,
-      "last_reset_time": "bad-date",
-      "cycle_started_at": "",
-      "resets": [null, {"detected_at":"2026-11-21 12:00","reason":"reset_time_changed","prev_remaining":"not-a-num","new_remaining":1.0,"reset_time":""}]
-    }
-  }
-}
+cat << 'JSON' > "$JB_DIR/usage_logs/s_w0_sun.json"
+{"timestamp":"2026-01-04 22:00","session_id":"s_w0_sun","model":"Claude Sonnet 4.5","input_tokens":2000,"uncached_tokens":1500,"cache_tokens":500,"output_tokens":200,"main_cost_usd":0.500,"subagent_cost_usd":0,"cost_usd":0.500}
 JSON
-MALFORMED_CYCLES=$("$JB_DIR/report.sh" cycles)
-assert_contains "cycles renders unknown bucket fallback" "custom-weekly" "$MALFORMED_CYCLES"
-assert_contains "cycles renders non-ISO reset_time fallback" "bad-date" "$MALFORMED_CYCLES"
-assert_contains "cycles renders empty reset_time as N/A" "N/A" "$MALFORMED_CYCLES"
-assert_eq "cycles strips non-object bucket entry" "false" "$(jq -r '.buckets | has("bogus-non-obj")' "$JB_DIR/quota_cycles.json")"
-assert_eq "cycles strips null reset element" "1" "$(jq -r '.buckets["custom-weekly"].resets | length' "$JB_DIR/quota_cycles.json")"
+cat << 'JSON' > "$JB_DIR/usage_logs/s_w1_sun.json"
+{"timestamp":"2025-12-28 23:59","session_id":"s_w1_sun","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":2.000}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/s_w2_mid.json"
+{"timestamp":"2025-12-17 14:30","session_id":"s_w2_mid","model":"Gemini 3.8 Argon","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":3.000}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/s_w_gap.json"
+{"timestamp":"2025-05-10 12:00","session_id":"s_w_gap","model":"Neon","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":4.000}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/s_m13.json"
+{"timestamp":"2024-12-15 10:00","session_id":"s_m13","model":"Neon","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":5.000}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/s_future.json"
+{"timestamp":"2026-02-10 10:00","session_id":"s_future","model":"Neon","input_tokens":500,"uncached_tokens":500,"cache_tokens":0,"output_tokens":50,"cost_usd":0.750}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/sr1.json"
+{"timestamp":"2026-11-22 14:00","session_id":"sr1","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":1.100}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/sr2.json"
+{"timestamp":"2026-11-22 18:00","session_id":"sr2","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":1.200}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/sr3_late.json"
+{"timestamp":"2026-11-22 18:01","session_id":"sr3_late","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":1.300}
+JSON
+cat << 'JSON' > "$JB_DIR/usage_logs/sr_date.json"
+{"timestamp":"2026-11-21","session_id":"sr_date","model":"Gemini 3.8 Flash","input_tokens":1000,"uncached_tokens":1000,"cache_tokens":0,"output_tokens":100,"cost_usd":1.400}
+JSON
+TODAY_D=$(date +"%Y-%m-%d")
+cat << 'JSON' > "$JB_DIR/usage_logs/s_bad_ts.json"
+{"timestamp":"N/A","session_id":"s_bad_ts","model":"Gemini 3.8 Flash","input_tokens":100,"uncached_tokens":100,"cache_tokens":0,"output_tokens":10,"cost_usd":0.100}
+JSON
+
+# Calendar week 0 / 1 / 2 / 01 with JENBACH_TODAY=2026-01-01 (Thu -> Mon 2025-12-29..Sun 2026-01-04)
+REP_W0=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" week)
+assert_contains "week 0 label" "week (2025-12-29..2026-01-04)" "$REP_W0"
+assert_contains "week 0 includes Mon 2025-12-29" "s_w0_mon" "$REP_W0"
+assert_contains "week 0 includes Sun 2026-01-04" "s_w0_sun" "$REP_W0"
+assert_not_contains "week 0 excludes prev Sun 2025-12-28" "s_w1_sun" "$REP_W0"
+
+REP_W1=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" week 1)
+assert_contains "week 1 label" "week #1 (2025-12-22..2025-12-28)" "$REP_W1"
+assert_contains "week 1 includes Sun 2025-12-28" "s_w1_sun" "$REP_W1"
+assert_not_contains "week 1 excludes Mon 2025-12-29" "s_w0_mon" "$REP_W1"
+
+REP_W01=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" week 01)
+assert_contains "week 01 octal-safe matches week 1" "week #1 (2025-12-22..2025-12-28)" "$REP_W01"
+
+REP_W2=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" week 2)
+assert_contains "week 2 label" "week #2 (2025-12-15..2025-12-21)" "$REP_W2"
+assert_contains "week 2 includes s_w2_mid" "s_w2_mid" "$REP_W2"
+
+# Calendar month 0 / 1 / 08 / 12 / 13 / explicit YYYY-MM
+REP_M0=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" month)
+assert_contains "month 0 label" "month 2026-01" "$REP_M0"
+assert_contains "month 0 includes 2026-01-04" "s_w0_sun" "$REP_M0"
+assert_not_contains "month 0 excludes 2025-12-29" "s_w0_mon" "$REP_M0"
+
+REP_M1=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" month 1)
+assert_contains "month 1 label" "month 2025-12" "$REP_M1"
+assert_contains "month 1 includes 2025-12-29" "s_w0_mon" "$REP_M1"
+
+REP_M08=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" month 08)
+assert_contains "month 08 octal-safe" "month 2025-05" "$REP_M08"
+assert_contains "month 08 includes s_w_gap" "s_w_gap" "$REP_M08"
+
+REP_M13=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" month 13)
+assert_contains "month 13 label" "month 2024-12" "$REP_M13"
+assert_contains "month 13 includes s_m13" "s_m13" "$REP_M13"
+
+REP_M_EXP=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" month 2026-11)
+assert_contains "month 2026-11 label" "month 2026-11" "$REP_M_EXP"
+assert_contains "month 2026-11 includes sr1" "sr1" "$REP_M_EXP"
+
+REP_M_FLAG=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" --month 2026-11)
+assert_contains "--month 2026-11 includes sr1" "sr1" "$REP_M_FLAG"
+
+# jenbach weeks: exact offsets, future '-', residual millidollar parity, -n truncation, width/plain
+REP_WEEKS=$(JENBACH_TODAY=2026-01-01 JENBACH_WIDTH=115 "$JB_DIR/report.sh" weeks)
+assert_contains "weeks header" "WEEKLY USAGE" "$REP_WEEKS"
+assert_contains "weeks future row has -" "2026-02-09 - 2026-02-15" "$REP_WEEKS"
+assert_contains "weeks #0 exact residual total \$1.500" "\$1.500" "$REP_WEEKS"
+assert_contains "weeks #0 matches week 0 KPI \$1.500" "\$1.500" "$REP_W0"
+assert_contains "weeks #2 offset preserved" "2025-12-15 - 2025-12-21" "$REP_WEEKS"
+assert_contains "weeks inspection hint" "Run 'jenbach week <#>' to inspect a week." "$REP_WEEKS"
+MAX_WKS_W115=$(printf '%s\n' "$REP_WEEKS" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+assert_eq "weeks width 115 raw line length <= 160" "true" "$([ "$MAX_WKS_W115" -le 160 ] && echo true || echo false)"
+
+REP_WEEKS_N2=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" weeks -n 2)
+assert_contains "weeks -n 2 shows SHOWING 2 OF" "WEEKLY USAGE (SHOWING 2 OF " "$REP_WEEKS_N2"
+assert_contains "weeks -n 2 footer" "Run 'jenbach weeks -n " "$REP_WEEKS_N2"
+# Top 2 weeks are 2026-11-16 ($5.000) and 2026-02-09 ($0.750) -> GRAND TOTAL $5.750
+assert_contains "weeks -n 2 GRAND TOTAL sums displayed weeks only" "\$5.750" "$REP_WEEKS_N2"
+
+"$JB_DIR/report.sh" set theme plain >/dev/null
+REP_WEEKS_PLN=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh" weeks)
+assert_eq "plain weeks zero ESC" "0" "$(printf '%s' "$REP_WEEKS_PLN" | grep -c $'\x1b' || true)"
+assert_eq "plain weeks pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_WEEKS_PLN") || true)"
+"$JB_DIR/report.sh" set theme modern >/dev/null
+
+# --from / --to HH:MM ranges (quoted, T, unquoted 2-arg, date-only, open-ended excludes N/A)
+REP_RNG_Q=$("$JB_DIR/report.sh" --from "2026-11-22 14:00" --to "2026-11-22 18:00")
+assert_contains "quoted range includes 14:00" "sr1" "$REP_RNG_Q"
+assert_contains "quoted range includes 18:00" "sr2" "$REP_RNG_Q"
+assert_not_contains "quoted range excludes 18:01" "sr3_late" "$REP_RNG_Q"
+
+REP_RNG_T=$("$JB_DIR/report.sh" --from 2026-11-22T14:00 --to 2026-11-22T18:00)
+assert_contains "T range includes 14:00" "sr1" "$REP_RNG_T"
+assert_not_contains "T range excludes 18:01" "sr3_late" "$REP_RNG_T"
+
+REP_RNG_U=$("$JB_DIR/report.sh" --from 2026-11-22 14:00 --to 2026-11-22 18:00)
+assert_contains "unquoted 2-arg range includes 14:00" "sr1" "$REP_RNG_U"
+assert_contains "unquoted 2-arg range includes 18:00" "sr2" "$REP_RNG_U"
+assert_not_contains "unquoted 2-arg range excludes 18:01" "sr3_late" "$REP_RNG_U"
+
+REP_FROM_NA=$("$JB_DIR/report.sh" --from 2026-11-22)
+assert_contains "open-ended --from includes sr1" "sr1" "$REP_FROM_NA"
+assert_not_contains "open-ended --from excludes N/A timestamp" "s_bad_ts" "$REP_FROM_NA"
+
+REP_TO_DATE=$("$JB_DIR/report.sh" --from 2026-11-21 --to 2026-11-22)
+assert_contains "date-only --to includes 2026-11-22 18:01 (23:59 bound)" "sr3_late" "$REP_TO_DATE"
+assert_contains "date-only timestamp included in range" "sr_date" "$REP_TO_DATE"
+
+# All-corrupt timestamps in jenbach weeks prints clean message
+mkdir -p "$TMP_HOME/corrupt_wks_home/.gemini/antigravity-cli/jenbach/usage_logs"
+cp "$JB_DIR/report_config.json" "$TMP_HOME/corrupt_wks_home/.gemini/antigravity-cli/jenbach/report_config.json"
+cp "$JB_DIR/prices.json" "$TMP_HOME/corrupt_wks_home/.gemini/antigravity-cli/jenbach/prices.json"
+cp "$JB_DIR/usage_logs/s_bad_ts.json" "$TMP_HOME/corrupt_wks_home/.gemini/antigravity-cli/jenbach/usage_logs/s_bad_ts.json"
+CORRUPT_WKS=$(HOME="$TMP_HOME/corrupt_wks_home" "$JB_DIR/report.sh" weeks)
+assert_contains "all-corrupt weeks clean message" "No sessions with valid timestamps found." "$CORRUPT_WKS"
+rm -rf "$TMP_HOME/corrupt_wks_home"
+
+# Legacy default_view=cycle runtime fallback & install.sh migration
+TMP_CFG_CYC=$(jq '.default_view = "cycle"' "$JB_DIR/report_config.json")
+printf '%s\n' "$TMP_CFG_CYC" > "$JB_DIR/report_config.json"
+touch "$JB_DIR/quota_cycles.json" "$JB_DIR/.quota_cycles.tmp.123"
+CFG_LEGACY_OUT=$("$JB_DIR/report.sh" config)
+assert_contains "config normalizes legacy cycle->week" "week" "$CFG_LEGACY_OUT"
+INFO_LEGACY_OUT=$("$JB_DIR/report.sh" info)
+assert_contains "info normalizes legacy cycle->week" "default_view=week" "$INFO_LEGACY_OUT"
+REP_LEGACY_DEF=$(JENBACH_TODAY=2026-01-01 "$JB_DIR/report.sh")
+assert_contains "default report normalizes legacy cycle->week" "week (2025-12-29..2026-01-04)" "$REP_LEGACY_DEF"
+
+# install.sh migrates cycle->week and deletes quota_cycles.json
+"$REPO_DIR/install.sh" >/dev/null
+assert_eq "install migrates legacy default_view cycle->week" "week" "$(jq -r '.default_view' "$JB_DIR/report_config.json")"
+assert_eq "install deletes quota_cycles.json" "false" "$([ -f "$JB_DIR/quota_cycles.json" ] && echo true || echo false)"
+assert_eq "install deletes .quota_cycles.tmp.*" "false" "$([ -f "$JB_DIR/.quota_cycles.tmp.123" ] && echo true || echo false)"
+
+# set default-view accepts week|today|month|all and rejects cycle|bogus
+for dv in "today" "month" "all" "week"; do
+  "$JB_DIR/report.sh" set default-view "$dv" >/dev/null
+  assert_eq "set default-view $dv" "$dv" "$(jq -r '.default_view' "$JB_DIR/report_config.json")"
+done
+
+# Error matrix: cycle, cycles, invalid offsets, inverted/invalid ranges, conflicting filters
+for bad_flt in \
+  "cycle" "cycles" "today week" "weeks today" \
+  "week -1" "week 2601" "week 99999999999999999999" "week abc" \
+  "month -1" "month 1201" "month 2026-13" "month 2026-00" "month abc" \
+  "--month" "--month 2026-13" "--from" "--to" "--from 2026-02-30" \
+  "--from 2026-11-22 25:00" "--from \"2026-11-22 25:00\"" \
+  "--from 2026-11-22 18:00 --to 2026-11-22 14:00" \
+  "--from 2026-11-01 --from 2026-11-02" "--to 2026-11-01 --to 2026-11-02" \
+  "--month 2026-11 --from 2026-11-01" \
+  "set default-view cycle" "set default-view bogus"; do
+  if eval "\"$JB_DIR/report.sh\" $bad_flt" >/dev/null 2>&1; then
+    echo "FAIL: '$bad_flt' should exit 1" >&2
+    FAIL=$((FAIL + 1))
+  else
+    PASS=$((PASS + 1))
+  fi
+done
 
 # Info fallback paths (missing VERSION, invalid/missing prices.json)
 mv "$JB_DIR/VERSION" "$JB_DIR/VERSION.bak"
@@ -1195,26 +1145,6 @@ cp "$REPO_DIR/prices.json" "$JB_DIR/prices.json"
 PRICES_COLOR_OUT=$("$JB_DIR/report.sh" prices)
 assert_not_contains "prices Promo note not painted yellow (33m)" $'\x1b[33m' "$PRICES_COLOR_OUT"
 assert_contains "prices Promo note emits bold (1m)" $'\x1b[1mPromo' "$PRICES_COLOR_OUT"
-
-# Cycles semantic color checks with color on
-QCYC_BAK=$(cat "$JB_DIR/quota_cycles.json" 2>/dev/null || echo "")
-cat << 'JSON' > "$JB_DIR/quota_cycles.json"
-{"buckets":{
-  "gemini-weekly":{"cycle_started_at":"2026-11-20","last_remaining":0.20,"last_reset_time":"2026-11-27T00:00:00Z","resets":[{"detected_at":"2026-11-20 00:00","reason":"reset_time_changed","prev_remaining":0.10,"new_remaining":1.0,"reset_time":"2026-11-27T00:00:00Z"}]},
-  "3p-weekly":{"cycle_started_at":"","last_remaining":0.50,"last_reset_time":"2026-11-27T00:00:00Z","resets":[]},
-  "gemini-argon-wtu-weekly":{"cycle_started_at":"2026-11-20","last_remaining":0.10,"last_reset_time":"2026-11-27T00:00:00Z","resets":[]},
-  "custom-null":{"cycle_started_at":"2026-11-20","last_remaining":null,"last_reset_time":"2026-11-27T00:00:00Z","resets":[]}
-}}
-JSON
-CYCLES_COLOR_OUT=$("$JB_DIR/report.sh" cycles)
-assert_contains "cycles Remaining 20% emits bold (1m)" $'\x1b[1m      20%\x1b[0m' "$CYCLES_COLOR_OUT"
-assert_contains "cycles Remaining 50% emits green (32m)" $'\x1b[32m      50%\x1b[0m' "$CYCLES_COLOR_OUT"
-assert_contains "cycles Remaining 10% emits bold_red (1;31m)" $'\x1b[1;31m      10%\x1b[0m' "$CYCLES_COLOR_OUT"
-assert_contains "cycles Remaining null emits dim (90m)" $'\x1b[90m      N/A\x1b[0m' "$CYCLES_COLOR_OUT"
-assert_not_contains "cycles does not emit plain yellow (33m)" $'\x1b[33m' "$CYCLES_COLOR_OUT"
-assert_not_contains "cycles Cycle Start date not painted cyan (36m)" $'\x1b[36m2026-11-20' "$CYCLES_COLOR_OUT"
-assert_contains "cycles Reason Scheduled reset uncolored" "Scheduled reset" "$CYCLES_COLOR_OUT"
-if [ -n "$QCYC_BAK" ]; then printf '%s' "$QCYC_BAK" > "$JB_DIR/quota_cycles.json"; else rm -f "$JB_DIR/quota_cycles.json"; fi
 
 # Statusline semantic color checks (Cache 3-tier, Ctx/Wk mid-tier bold, null & boundaries)
 SL_MID=$(printf '%s' '{"session_id":"s_col_1","model":{"display_name":"Gemini 4 Hydrogen"},"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":65,"current_usage":{"input_tokens":400,"cache_read_input_tokens":600}},"quota":{"gemini-weekly":{"remaining_fraction":0.20}}}' | "$JB_DIR/statusline.sh")
@@ -2122,11 +2052,11 @@ for bad_n_args in "-n 0" "-n abc" "--limit" "--limit 0" "--limit abc" "-n 5 -n 1
   fi
 done
 
-# cycle -n 5, cycle --limit 5, standalone -n 5
-REP_CYC_N5=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" cycle -n 5)
-assert_contains "cycle -n 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)" "$REP_CYC_N5"
-REP_CYC_LIM5=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" cycle --limit 5)
-assert_contains "cycle --limit 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)" "$REP_CYC_LIM5"
+# week -n 5, week --limit 5, standalone -n 5
+REP_WK_N5=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" week -n 5)
+assert_contains "week -n 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)" "$REP_WK_N5"
+REP_WK_LIM5=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" week --limit 5)
+assert_contains "week --limit 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)" "$REP_WK_LIM5"
 REP_DEF_N5=$(JENBACH_WIDTH=115 JENBACH_HEIGHT=28 "$F_JB/report.sh" -n 5)
 assert_contains "standalone -n 5 shows SHOWING 5 OF 15" "RECENT SESSIONS (SHOWING 5 OF 15)" "$REP_DEF_N5"
 
@@ -2191,7 +2121,7 @@ if bash "$REPO_DIR/uninstall.sh" --bogus 2>/dev/null; then
 else
   PASS=$((PASS + 1))
 fi
-touch "$JB_DIR/.quota_cycles.tmp.999" "$JB_DIR/usage_logs/.sub_u1.json" "$JB_DIR/usage_logs/.sub_u1.ttl"
+touch "$JB_DIR/quota_cycles.json" "$JB_DIR/.quota_cycles.tmp.999" "$JB_DIR/usage_logs/.sub_u1.json" "$JB_DIR/usage_logs/.sub_u1.ttl"
 touch "$JB_DIR/.latest_version" "$JB_DIR/.latest_version.tmp.999" "$JB_DIR/.app_update_next_check" "$JB_DIR/.app_update_next_check.tmp.999" "$JB_DIR/.app_update.hdr.999"
 mkdir -p "$JB_DIR/usage_logs/.sub_u1.lock" "$JB_DIR/.app_update.lock" "$JB_DIR/lib/__pycache__"
 touch "$JB_DIR/lib/__pycache__/subagent_sync.cpython-314.pyc"
@@ -2216,7 +2146,7 @@ assert_eq "uninstall removes .quota_cycles.tmp.*" "false" "$([ -f "$JB_DIR/.quot
 assert_eq "uninstall removes .prices_next_check" "false" "$([ -f "$JB_DIR/.prices_next_check" ] && echo true || echo false)"
 assert_eq "uninstall removes .prices.etag" "false" "$([ -f "$JB_DIR/.prices.etag" ] && echo true || echo false)"
 assert_eq "uninstall preserves usage_logs" "true" "$([ -d "$JB_DIR/usage_logs" ] && echo true || echo false)"
-assert_eq "uninstall preserves quota_cycles.json" "true" "$([ -f "$JB_DIR/quota_cycles.json" ] && echo true || echo false)"
+assert_eq "uninstall removes quota_cycles.json" "false" "$([ -f "$JB_DIR/quota_cycles.json" ] && echo true || echo false)"
 
 bash "$REPO_DIR/uninstall.sh" --purge >/dev/null
 assert_eq "uninstall --purge removes JB_DIR" "false" "$([ -d "$JB_DIR" ] && echo true || echo false)"
