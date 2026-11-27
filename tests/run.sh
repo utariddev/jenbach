@@ -40,6 +40,25 @@ assert_not_contains() {
   fi
 }
 
+write_fixture_prices() {
+  local dest="$1"
+  cat << 'JSON' > "$dest"
+{
+  "updated_at": "2026-11-17",
+  "models": {
+    "flash":    { "in": 0.75, "cached": 0.1875, "out": 3.75,  "note": "Promo until 2026-12-31" },
+    "hydrogen": { "in": 1.50, "cached": 0.375,  "out": 7.50,  "note": "Standard rate" },
+    "argon":    { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Promo until 2026-11-30" },
+    "carbon":   { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Promo until 2026-11-30" },
+    "sonnet":   { "in": 3.00, "cached": 0.30,   "out": 15.00, "note": "Claude Sonnet 5.5" },
+    "opus":     { "in": 5.00, "cached": 0.50,   "out": 25.00, "note": "Claude Opus 5.5" },
+    "gpt-oss":  { "in": 0.50, "cached": 0.125,  "out": 2.00,  "note": "GPT-OSS 120B" },
+    "default":  { "in": 2.00, "cached": 0.50,   "out": 10.00, "note": "Fallback rate" }
+  }
+}
+JSON
+}
+
 # 1. Syntax checks
 bash -n "$REPO_DIR/statusline.sh" "$REPO_DIR/report.sh" "$REPO_DIR/install.sh" "$REPO_DIR/uninstall.sh" "$REPO_DIR/lib/auto_update.sh" "$REPO_DIR/lib/app_update.sh" "$REPO_DIR/scripts/sync_prices.sh" "$REPO_DIR/tests/run.sh"
 if command -v python3 >/dev/null 2>&1; then
@@ -49,6 +68,30 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 jq empty "$REPO_DIR/prices.json" "$REPO_DIR/scripts/price_sources.json"
 PASS=$((PASS + 1))
+
+# 1b. Live prices.json & scripts/price_sources.json structural contract tests
+assert_eq "live price_sources.json schema valid" "true" "$(jq -r '
+  . as $root |
+  (.upstream_url | type == "string" and length > 0) and
+  (.default_from | type == "string" and length > 0) and
+  (.models | type == "object" and length > 0) and
+  ($root.models | has($root.default_from)) and
+  ([.models[] | (.candidates | type == "array" and length > 0 and all(type == "string" and length > 0))] | all)
+' "$REPO_DIR/scripts/price_sources.json")"
+
+assert_eq "live prices.json schema and dynamic key contract valid" "true" "$(jq -r \
+  --slurpfile src "$REPO_DIR/scripts/price_sources.json" '
+  (.updated_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and
+  (.models | type == "object") and
+  (.models | has("default")) and
+  ((($src[0].models | keys) - (.models | keys)) | length == 0) and
+  ([.models[] | (
+    (.["in"] | type == "number") and .["in"] > 0 and .["in"] < 500 and
+    (.cached | type == "number") and .cached >= 0 and .cached <= .["in"] and
+    (.out | type == "number") and .out > 0 and .out < 1000 and
+    ((has("note") | not) or (.note == null) or (.note | type == "string"))
+  )] | all)
+' "$REPO_DIR/prices.json")"
 
 # 2. Unit tests for lib/common.jq
 LIB_DIR="$REPO_DIR/lib"
@@ -265,9 +308,34 @@ REP_PLAIN=$("$JB_DIR/report.sh")
 assert_eq "plain report zero ESC" "0" "$(printf '%s' "$REP_PLAIN" | grep -c $'\x1b' || true)"
 assert_eq "plain report pure ASCII" "0" "$(LC_ALL=C grep -c '[^ -~]' <(printf '%s\n' "$REP_PLAIN") || true)"
 
-# Prices test
+# Prices test (against live $REPO_DIR/prices.json installed by install.sh)
+LIVE_PRICES_UPD=$(jq -r '.updated_at' "$REPO_DIR/prices.json")
 PRICES_OUT=$("$JB_DIR/report.sh" prices)
 assert_contains "prices has Model Key" "Model Key" "$PRICES_OUT"
+assert_contains "live report.sh prices renders live updated_at" "(Updated: $LIVE_PRICES_UPD)" "$PRICES_OUT"
+
+# install.sh newer-prices.json preservation test (isolated sub-HOME)
+INST_PRICE_HOME="$TMP_HOME/install_prices_test"
+INST_PRICE_JB="$INST_PRICE_HOME/.gemini/antigravity-cli/jenbach"
+mkdir -p "$INST_PRICE_JB"
+LIVE_REPO_UPD=$(jq -r '.updated_at' "$REPO_DIR/prices.json")
+
+# Case 1: Newer local prices.json (2099-01-01) must be preserved
+cat << 'JSON' > "$INST_PRICE_JB/prices.json"
+{"updated_at":"2099-01-01","models":{"default":{"in":99,"cached":1,"out":199,"note":"Sentinel"}}}
+JSON
+HOME="$INST_PRICE_HOME" JENBACH_USR_LOCAL_BIN="$INST_PRICE_HOME/no_usr" JENBACH_BREW_BIN="$INST_PRICE_HOME/no_brew" "$REPO_DIR/install.sh" >/dev/null
+assert_eq "install.sh preserves newer local prices.json date" "2099-01-01" "$(jq -r '.updated_at' "$INST_PRICE_JB/prices.json")"
+assert_eq "install.sh preserves newer local prices.json rate" "true" "$(jq -r '.models.default.in == 99' "$INST_PRICE_JB/prices.json")"
+
+# Case 2: Older local prices.json (2000-01-01) must be upgraded from repo
+cat << 'JSON' > "$INST_PRICE_JB/prices.json"
+{"updated_at":"2000-01-01","models":{"default":{"in":99,"cached":1,"out":199,"note":"Stale"}}}
+JSON
+HOME="$INST_PRICE_HOME" JENBACH_USR_LOCAL_BIN="$INST_PRICE_HOME/no_usr" JENBACH_BREW_BIN="$INST_PRICE_HOME/no_brew" "$REPO_DIR/install.sh" >/dev/null
+assert_eq "install.sh upgrades older local prices.json date" "$LIVE_REPO_UPD" "$(jq -r '.updated_at' "$INST_PRICE_JB/prices.json")"
+assert_eq "install.sh upgrades older local prices.json content" "true" "$(jq -r --slurpfile repo "$REPO_DIR/prices.json" '.models == $repo[0].models' "$INST_PRICE_JB/prices.json")"
+rm -rf "$INST_PRICE_HOME"
 
 # Additional statusline & report edge-case tests
 OUT_EMPTY=$(printf '' | "$JB_DIR/statusline.sh")
@@ -305,7 +373,7 @@ assert_contains "empty logs message" "No recorded sessions found" "$EMPTY_REP"
 # 4. Offline sync_prices.sh tests
 SYNC_TMP="$TMP_HOME/sync_test"
 mkdir -p "$SYNC_TMP"
-cp "$REPO_DIR/prices.json" "$SYNC_TMP/prices.json"
+write_fixture_prices "$SYNC_TMP/prices.json"
 
 cat << 'JSON' > "$SYNC_TMP/upstream.json"
 {
@@ -354,7 +422,7 @@ assert_eq "sync_prices argon note preserved on unchanged rates" "Promo until 202
 assert_eq "sync_prices carbon in" "1.25" "$(jq -r '.models.carbon.in' "$SYNC_TMP/prices.json")"
 assert_eq "sync_prices carbon cached recomputed on changed in" "0.3125" "$(jq -r '.models.carbon.cached' "$SYNC_TMP/prices.json")"
 assert_eq "sync_prices neon added" "3" "$(jq -r '.models.neon.in' "$SYNC_TMP/prices.json")"
-assert_eq "sync_prices gpt-oss fallback preserved" "0.50" "$(jq -r '.models["gpt-oss"].in' "$SYNC_TMP/prices.json")"
+assert_eq "sync_prices gpt-oss fallback preserved" "true" "$(jq -r '.models["gpt-oss"].in == 0.5' "$SYNC_TMP/prices.json")"
 
 # Idempotent second run should not bump updated_at or emit diff
 jq '.updated_at = "2020-01-01"' "$SYNC_TMP/prices.json" > "$SYNC_TMP/prices.json.tmp" && mv "$SYNC_TMP/prices.json.tmp" "$SYNC_TMP/prices.json"
@@ -413,7 +481,7 @@ bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_drop.json" "$SYNC_TM
 assert_eq "sync_prices dropped in falls back cached to 0.25x" "0.05" "$(jq -r '.models.argon.cached' "$SYNC_TMP/fresh_prices.json")"
 
 # Stale cached rate <= new dropped in rate (when in changed) and negative cache_read_input_token_cost
-cp "$REPO_DIR/prices.json" "$SYNC_TMP/stale_prices.json"
+write_fixture_prices "$SYNC_TMP/stale_prices.json"
 cat << 'JSON' > "$SYNC_TMP/upstream_stale_cached.json"
 {
   "together_ai/openai/gpt-oss-120b": {
@@ -444,8 +512,8 @@ JSON
 bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/stale_prices.json" >/dev/null 2>&1
 assert_eq "sync_prices stale cached <= new_in recomputes 0.25x on in change" "0.0375" "$(jq -r '.models["gpt-oss"].cached' "$SYNC_TMP/stale_prices.json")"
 assert_eq "sync_prices negative cache_read_input_token_cost falls back cleanly" "0.1875" "$(jq -r '.models.flash.cached' "$SYNC_TMP/stale_prices.json")"
-assert_eq "sync_prices negative cache_read_input_token_cost preserves non-0.25x prev.cached" "0.50" "$(jq -r '.models.opus.cached' "$SYNC_TMP/stale_prices.json")"
-assert_eq "sync_prices unchanged in preserves non-0.25x prev.cached" "0.30" "$(jq -r '.models.sonnet.cached' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices negative cache_read_input_token_cost preserves non-0.25x prev.cached" "true" "$(jq -r '.models.opus.cached == 0.5' "$SYNC_TMP/stale_prices.json")"
+assert_eq "sync_prices unchanged in preserves non-0.25x prev.cached" "true" "$(jq -r '.models.sonnet.cached == 0.3' "$SYNC_TMP/stale_prices.json")"
 assert_eq "sync_prices zero cache_read_input_token_cost accepted" "0" "$(jq -r '.models.neon.cached' "$SYNC_TMP/stale_prices.json")"
 
 # Guard rejects cache_read_input_token_cost > input_cost_per_token
@@ -466,14 +534,15 @@ else
 fi
 
 # Non-object previous model entry in target prices.json should not crash jq
-jq '.models.flash = "corrupt"' "$REPO_DIR/prices.json" > "$SYNC_TMP/corrupt_prices.json"
+write_fixture_prices "$SYNC_TMP/base_fixture.json"
+jq '.models.flash = "corrupt"' "$SYNC_TMP/base_fixture.json" > "$SYNC_TMP/corrupt_prices.json"
 bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/corrupt_prices.json" >/dev/null 2>&1
 assert_eq "sync_prices recovers from non-object prev entry" "0.1875" "$(jq -r '.models.flash.cached' "$SYNC_TMP/corrupt_prices.json")"
 
 # Missing default_from (argon) falls back to valid $om.default, and rejects non-object $om.default
-jq 'del(.models.argon)' "$REPO_DIR/prices.json" > "$SYNC_TMP/no_argon_prices.json"
+jq 'del(.models.argon)' "$SYNC_TMP/base_fixture.json" > "$SYNC_TMP/no_argon_prices.json"
 bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/no_argon_prices.json" >/dev/null 2>&1
-assert_eq "sync_prices preserves object om.default when default_from missing" "2.00" "$(jq -r '.models.default.in' "$SYNC_TMP/no_argon_prices.json")"
+assert_eq "sync_prices preserves object om.default when default_from missing" "true" "$(jq -r '.models.default.in == 2' "$SYNC_TMP/no_argon_prices.json")"
 jq '.models.default = "corrupt"' "$SYNC_TMP/no_argon_prices.json" > "$SYNC_TMP/corrupt_default_prices.json"
 if bash "$REPO_DIR/scripts/sync_prices.sh" "$SYNC_TMP/upstream_stale_cached.json" "$SYNC_TMP/corrupt_default_prices.json" >/dev/null 2>&1; then
   echo "FAIL: sync_prices should reject missing default when om.default is non-object" >&2
@@ -1157,7 +1226,7 @@ KPI_L1_ESC=$(printf '%s\n' "$KPI_L1_LINE" | grep -o $'\x1b\\[[0-9;]*m' | wc -l)
 assert_eq "KPI Line 1 merged ANSI count <= 12" "true" "$([ "$KPI_L1_ESC" -le 12 ] && echo true || echo false)"
 MAX_RAW_COLORS_W115=$(printf '%s\n' "$REP_COLORS" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
 assert_eq "REP_COLORS width 115 raw line length <= 160" "true" "$([ "$MAX_RAW_COLORS_W115" -le 160 ] && echo true || echo false)"
-cp "$REPO_DIR/prices.json" "$JB_DIR/prices.json"
+write_fixture_prices "$JB_DIR/prices.json"
 PRICES_COLOR_OUT=$("$JB_DIR/report.sh" prices)
 assert_not_contains "prices Promo note not painted yellow (33m)" $'\x1b[33m' "$PRICES_COLOR_OUT"
 assert_contains "prices Promo note emits bold (1m)" $'\x1b[1mPromo' "$PRICES_COLOR_OUT"
@@ -1215,7 +1284,7 @@ assert_eq "content_min > 104 unifies all blocks" "1" "$(printf '%s\n' "$REP_LONG
 rm -f "$JB_DIR/usage_logs/s_long.json"
 
 # 6e. Live Subagent DB Sync, Animated Statusline Spinner, Tree Report & Accounting Invariants
-cp "$REPO_DIR/prices.json" "$JB_DIR/prices.json"
+write_fixture_prices "$JB_DIR/prices.json"
 rm -f "$JB_DIR/usage_logs"/*.json "$JB_DIR/usage_logs"/.sub_*.json "$JB_DIR/usage_logs"/.sub_*.ttl
 rm -rf "$JB_DIR/usage_logs"/.sub_*.lock "$HOME/.gemini/antigravity-cli/brain" "$HOME/.gemini/antigravity-cli/conversations"
 
