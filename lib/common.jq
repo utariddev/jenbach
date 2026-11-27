@@ -53,7 +53,7 @@ def hit_color($pct):
 
 def think_color($t):
   (($t // "") | tostring | ascii_downcase) as $tl |
-  if $tl == "high" then "bold"
+  if ($tl == "high" or $tl == "xhigh") then "bold"
   elif $tl == "medium" then ""
   else "dim" end;
 
@@ -81,8 +81,9 @@ def short_model($m; $plain):
 
 def split_model_think($m):
   (($m // "Unknown") | tostring | if . == "" then "Unknown" else . end) as $s |
-  if ($s | test("^.+?[ ]*\\((Low|Medium|High|Minimal)\\)$"; "i")) then
-    ($s | sub("[ ]*\\((Low|Medium|High|Minimal)\\)$"; ""; "i")) as $base |
+  "(Low|Medium|High|XHigh|Minimal)" as $tiers |
+  if ($s | test("^.+?[ ]*\\(\($tiers)\\)$"; "i")) then
+    ($s | sub("[ ]*\\(\($tiers)\\)$"; ""; "i")) as $base |
     ($s | sub("^.*\\("; "") | sub("\\)$"; "")) as $think |
     {base: (if $base == "" then $s else $base end), think: $think}
   else

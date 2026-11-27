@@ -97,6 +97,8 @@ assert_eq "hit_color(null)" 'dim' "$(jq -L "$LIB_DIR" -rn 'include "common"; hit
 assert_eq "hit_color(string)" 'dim' "$(jq -L "$LIB_DIR" -rn 'include "common"; hit_color("bad")')"
 assert_eq "think_color(High)" 'bold' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("High")')"
 assert_eq "think_color(high)" 'bold' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("high")')"
+assert_eq "think_color(XHigh)" 'bold' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("XHigh")')"
+assert_eq "think_color(xhigh)" 'bold' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("xhigh")')"
 assert_eq "think_color(Medium)" '' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("Medium")')"
 assert_eq "think_color(Low)" 'dim' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("Low")')"
 assert_eq "think_color(Minimal)" 'dim' "$(jq -L "$LIB_DIR" -rn 'include "common"; think_color("Minimal")')"
@@ -997,6 +999,13 @@ assert_eq "split_model_think space-only base fallback" '{"base":" (High)","think
 assert_eq "split_model_think case-insensitive lowercase" '{"base":"Model","think":"high"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (high)")')"
 assert_eq "split_model_think case-insensitive minimal" '{"base":"Model","think":"minimal"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (minimal)")')"
 assert_eq "split_model_think non-trailing parens unchanged" '{"base":"Model (High) v2","think":"-"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (High) v2")')"
+assert_eq "split_model_think XHigh" '{"base":"Gemini 4 Hydrogen","think":"XHigh"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Gemini 4 Hydrogen (XHigh)")')"
+assert_eq "split_model_think case-insensitive xhigh" '{"base":"Model","think":"xhigh"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (xhigh)")')"
+assert_eq "split_model_think extra parens XHigh" '{"base":"Custom Model (v2)","think":"XHigh"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Custom Model (v2) (XHigh)")')"
+assert_eq "split_model_think space-only base fallback XHigh" '{"base":" (XHigh)","think":"XHigh"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think(" (XHigh)")')"
+assert_eq "split_model_think non-trailing XHigh unchanged" '{"base":"Model (XHigh) v2","think":"-"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (XHigh) v2")')"
+assert_eq "split_model_think invalid XXHigh unchanged" '{"base":"Model (XXHigh)","think":"-"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("Model (XXHigh)")')"
+assert_eq "split_model_think bare XHigh unchanged" '{"base":"(XHigh)","think":"-"}' "$(jq -L "$LIB_DIR" -cn 'include "common"; split_model_think("(XHigh)")')"
 
 assert_eq "merge_segments merges adjacent same-style" '[{"t":"ab","c":""},{"t":"cd","c":"bold"}]' "$(jq -L "$LIB_DIR" -cn 'include "common"; merge_segments([{t:"a",c:""},{t:"b",c:""},{t:"c",c:"bold"},{t:"d",c:"bold"}])')"
 assert_eq "merge_segments empty" '[]' "$(jq -L "$LIB_DIR" -cn 'include "common"; merge_segments([])')"
@@ -1128,8 +1137,15 @@ JSON
 cat << JSON > "$JB_DIR/usage_logs/s_h_low.json"
 {"timestamp":"$TODAY_D 12:11","session_id":"s_hyd_004","model":"Gemini 4 Hydrogen (Low)","input_tokens":5000,"uncached_tokens":2000,"cache_tokens":3000,"output_tokens":400,"cost_usd":0.123,"subagent_cost_usd":0}
 JSON
+cat << JSON > "$JB_DIR/usage_logs/s_h_xhigh.json"
+{"timestamp":"$TODAY_D 12:12","session_id":"s_hyd_005","model":"Gemini 4 Hydrogen (XHigh)","input_tokens":5000,"uncached_tokens":2000,"cache_tokens":3000,"output_tokens":400,"cost_usd":0.123,"subagent_cost_usd":0}
+JSON
 REP_COLORS=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
 assert_contains "think_color High emits bold (1m)" $'\x1b[1mHigh  \x1b[0m' "$REP_COLORS"
+assert_contains "think_color XHigh emits bold (1m)" $'\x1b[1mXHigh \x1b[0m' "$REP_COLORS"
+assert_not_contains "REP_COLORS splits XHigh from model name" "Gemini 4 Hydrogen (XHigh)" "$REP_COLORS"
+assert_eq "REP_COLORS shows XHigh in both tables" "2" "$(printf '%s\n' "$REP_COLORS" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -c 'XHigh' || true)"
+assert_eq "REP_COLORS width 115 unified visible width" "1" "$(printf '%s\n' "$REP_COLORS" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^(╭|│|╰|Model |─|Gemini |Subagent |GRAND |Date |[0-9]{2}-[0-9]{2} |[├└]─ )' | awk '{print length($0)}' | sort -u | wc -l | tr -d ' ')"
 assert_not_contains "think_color Medium is not cyan (36m)" $'\x1b[36mMedium' "$REP_COLORS"
 assert_not_contains "think_color Medium is not magenta (35m)" $'\x1b[35mMedium' "$REP_COLORS"
 assert_contains "think_color Low emits dim (90m)" $'\x1b[90mLow   \x1b[0m' "$REP_COLORS"
@@ -1178,7 +1194,16 @@ assert_contains "statusline Wk 30% boundary emits bold (1m)" $'\x1b[1m30%\x1b[0m
 SL_BND3=$(printf '%s' '{"session_id":"s_col_7","model":{"display_name":"Gemini 4 Hydrogen"},"context_window":{"total_input_tokens":1000,"total_output_tokens":100,"used_percentage":80,"current_usage":{"input_tokens":500,"cache_read_input_tokens":500}},"quota":{"gemini-weekly":{"remaining_fraction":0.31}}}' | "$JB_DIR/statusline.sh")
 assert_contains "statusline Ctx 80% boundary emits bold_red (1;31m)" $'\x1b[1;31m80%\x1b[0m' "$SL_BND3"
 assert_contains "statusline Wk 31% boundary emits green (32m)" $'\x1b[32m31%\x1b[0m' "$SL_BND3"
-rm -f "$JB_DIR/usage_logs/s_h_high.json" "$JB_DIR/usage_logs/s_h_low.json"
+cat << JSON > "$JB_DIR/usage_logs/s_h_xhigh_sub.json"
+{"timestamp":"$TODAY_D 12:13","session_id":"s_hyd_006","model":"Gemini 4 Hydrogen (Medium)","input_tokens":5000,"uncached_tokens":2000,"cache_tokens":3000,"output_tokens":400,"main_cost_usd":0.100,"subagent_cost_usd":0.023,"cost_usd":0.123,"has_subagents":false,"subagent_records":[{"session_id":"s_sub_xhigh","timestamp":"$TODAY_D 12:13","model":"Gemini 4 Neon (XHigh)","uncached_tokens":1000,"cache_tokens":500,"output_tokens":100,"cost_usd":0.023}]}
+JSON
+REP_XHIGH_SUB=$(JENBACH_WIDTH=115 "$JB_DIR/report.sh" all)
+assert_not_contains "REP_XHIGH_SUB splits XHigh from child model name" "Gemini 4 Neon (XHigh)" "$REP_XHIGH_SUB"
+assert_contains "REP_XHIGH_SUB child row renders bold XHigh" $'\x1b[1mXHigh \x1b[0m' "$(printf '%s\n' "$REP_XHIGH_SUB" | grep -E 'Neon')"
+assert_eq "REP_XHIGH_SUB width 115 unified visible width" "1" "$(printf '%s\n' "$REP_XHIGH_SUB" | sed $'s/\x1b\\[[0-9;]*m//g' | grep -E '^(╭|│|╰|Model |─|Gemini |Subagent |GRAND |Date |[0-9]{2}-[0-9]{2} |[├└]─ )' | awk '{print length($0)}' | sort -u | wc -l | tr -d ' ')"
+MAX_RAW_XHIGH_SUB_W115=$(printf '%s\n' "$REP_XHIGH_SUB" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+assert_eq "REP_XHIGH_SUB width 115 raw line length <= 160" "true" "$([ "$MAX_RAW_XHIGH_SUB_W115" -le 160 ] && echo true || echo false)"
+rm -f "$JB_DIR/usage_logs/s_h_high.json" "$JB_DIR/usage_logs/s_h_low.json" "$JB_DIR/usage_logs/s_h_xhigh.json" "$JB_DIR/usage_logs/s_h_xhigh_sub.json"
 
 cat << JSON > "$JB_DIR/usage_logs/s_long.json"
 {"timestamp":"$TODAY_D 12:12","session_id":"s_long_01","model":"Extremely Long Custom Enterprise Model Name For Wide Table Expansion (High)","input_tokens":5000,"uncached_tokens":2000,"cache_tokens":3000,"output_tokens":400,"cost_usd":0.123,"subagent_cost_usd":0}
